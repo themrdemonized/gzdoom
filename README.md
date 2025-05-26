@@ -5,7 +5,7 @@
 ### 3. Unpack archive into `libraries/onnxruntime` folder (so this folder should have `include`, `lib` folders, etc )
 ### 4. In Visual Studio, in zdoom project, add full path to `libraries/onnxruntime/include` folder into C++ -> Additional Include Directories, add full path to `libraries/onnxruntime/lib` folder into Linker -> Additional Library Directories and add `onnxruntime.lib` in Linker -> Input -> Additional Dependencies
 ### 5. Compile the engine
-### 6. After compilation, apart from new exe and pk3 files, you need to have these dll in gzdoom folder:
+### 6. After compilation, apart from new exe and pk3 files, you need to have the model `model.onnx` from this fork folder, and these dll in gzdoom folder:
 	* "onnxruntime.dll"
 	* "onnxruntime_providers_cuda.dll"
 	* "onnxruntime_providers_shared.dll", all of them get from `libraries\onnxruntime\lib`
