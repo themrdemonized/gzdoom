@@ -486,7 +486,6 @@ static void ORT_API_CALL OnnxPrintfLogger(
 	const char* code_location,
 	const char* message)
 {
-	// You can format the message as you like
 	Printf("[ONNX][%s][%s][%s] %s\n", logid, category, code_location, message);
 }
 
@@ -516,7 +515,7 @@ static unsigned char* OnnxHelper(int& N,
 		} 
 		else
 		{
-			if (OnnxDebug) Printf("ONNX Created CUDA provider options\n");
+			if (OnnxDebug) Printf("ONNX Created CUDA provider options, 4GB VRAM Limit\n");
 			std::vector<const char*> keys{ "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
 			std::vector<const char*> values{ "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
 
@@ -579,59 +578,60 @@ static unsigned char* OnnxHelper(int& N,
 		Printf("Output name: %s\n", output_name.get());
 	}
 
-	// 2. Prepare input tensor (convert to float32)
-	std::vector<int64_t> input_shape = { 1, 3, inHeight, inWidth };
-	size_t input_tensor_size = 1 * 3 * inHeight * inWidth;
-	std::vector<float> float32_buffer(input_tensor_size);
+	// 2. Prepare input tensor (convert to float32, 3 channel size)
+	std::vector<int64_t> input_shape = { 3, 3, inHeight, inWidth };
+	size_t input_tensor_size = 3 * 3 * inHeight * inWidth;
+	std::vector<float> float32_buffer(input_tensor_size, 0.0f);
 
 	// Convert RGBA NHWC to RGB NCHW and normalize to [0, 1]
+	// Fill each batch with a single channel (R, G, B) and handle alpha==0 with nearest neighbor search
 	static const int rgba_channel_map[3] = { 0, 1, 2 }; // R, G, B offsets in RGBA
 	static const int rgba_alpha_index = 3;
-	for (int h = 0; h < inHeight; ++h)
+	for (int d = 0; d < 3; ++d)
 	{
-		for (int w = 0; w < inWidth; ++w)
+		int b = rgba_channel_map[d];
+		for (int h = 0; h < inHeight; ++h)
 		{
-			size_t nhwc_index = (h * inWidth + w) * 4;
-			int alpha = inputBuffer[nhwc_index + rgba_alpha_index];
-
-			float rgb[3];
-			if (alpha == 0)
+			for (int w = 0; w < inWidth; ++w)
 			{
-				// Try to find a neighbor with alpha > 0
-				bool found = false;
-				static const int dx[8] = { 0, 0, -1, 1, -1, 1, -1, 1 };
-				static const int dy[8] = { -1, 1, 0, 0, -1, -1, 1, 1 };
-				for (int d = 0; d < 8 && !found; ++d)
+				size_t nhwc_index = (h * inWidth + w) * 4;
+				int alpha = inputBuffer[nhwc_index + 3];
+				float value = 0.0f;
+
+				if (alpha == 0)
 				{
-					int nx = w + dx[d];
-					int ny = h + dy[d];
-					if (nx >= 0 && nx < inWidth && ny >= 0 && ny < inHeight)
+					// Try to find a neighbor with alpha > 0
+					bool found = false;
+					static const int dx[8] = { 0, 0, -1, 1, -1, 1, -1, 1 };
+					static const int dy[8] = { -1, 1, 0, 0, -1, -1, 1, 1 };
+					for (int d = 0; d < 8 && !found; ++d)
 					{
-						size_t nidx = (ny * inWidth + nx) * 4;
-						if (inputBuffer[nidx + 3] > 0)
+						int nx = w + dx[d];
+						int ny = h + dy[d];
+						if (nx >= 0 && nx < inWidth && ny >= 0 && ny < inHeight)
 						{
-							for (int c = 0; c < 3; ++c)
-								rgb[rgba_channel_map[c]] = static_cast<float>(inputBuffer[nidx + rgba_channel_map[c]]) / 255.0f;
-							found = true;
+							size_t nidx = (ny * inWidth + nx) * 4;
+							if (inputBuffer[nidx + 3] > 0)
+							{
+								value = static_cast<float>(inputBuffer[nidx + b]) / 255.0f;
+								found = true;
+							}
 						}
 					}
-				}
-				if (!found)
+					if (!found)
+					{
+						value = 1.0f; // fallback: white
+					}
+				} else
 				{
-					// Fallback: white
-					rgb[0] = rgb[1] = rgb[2] = 1.0f;
+					value = static_cast<float>(inputBuffer[nhwc_index + b]) / 255.0f;
 				}
-			} 
-			else
-			{
-				for (int c = 0; c < 3; ++c)
-					rgb[rgba_channel_map[c]] = static_cast<float>(inputBuffer[nhwc_index + rgba_channel_map[c]]) / 255.0f;
-			}
 
-			for (int c = 0; c < 3; ++c)
-			{
-				size_t nchw_index = rgba_channel_map[c] * inHeight * inWidth + h * inWidth + w;
-				float32_buffer[nchw_index] = rgb[rgba_channel_map[c]];
+				for (int c = 0; c < 3; ++c)
+				{
+					size_t idx = b * 3 * inHeight * inWidth + rgba_channel_map[c] * inHeight * inWidth + h * inWidth + w;
+					float32_buffer[idx] = value;
+				}
 			}
 		}
 	}
@@ -653,17 +653,15 @@ static unsigned char* OnnxHelper(int& N,
 	Ort::Value& output_tensor = output_tensors.front();
 	auto output_type_info = output_tensor.GetTensorTypeAndShapeInfo();
 	std::vector<int64_t> output_shape = output_type_info.GetShape();
-	size_t output_tensor_size = output_type_info.GetElementCount();
 
 	api.ReleaseCUDAProviderOptions(cuda_options);
 
 	// 5. Set outWidth and outHeight from output shape
-	if (output_shape.size() == 4 && output_shape[0] == 1 && output_shape[1] == 3)
+	// Expecting output shape: [3, 3, outH, outW]
+	if (output_shape.size() == 4 && output_shape[0] == 3 && output_shape[1] == 3)
 	{
-		// Model output: [1, 3, H, W] (NCHW, RGB)
 		int outH = static_cast<int>(output_shape[2]);
 		int outW = static_cast<int>(output_shape[3]);
-
 		int Nw = outW / inWidth;
 		int Nh = outH / inHeight;
 		N = std::max({ Nw, Nh });
@@ -673,7 +671,7 @@ static unsigned char* OnnxHelper(int& N,
 		outHeight = outH;
 		size_t pixel_count = outW * outH;
 
-		unsigned char* newBuffer = static_cast<unsigned char*>(std::malloc(pixel_count * 4));
+		unsigned char* newBuffer = new unsigned char[pixel_count * 4];
 		if (!newBuffer)
 		{
 			Printf("Failed to allocate memory for ONNX output buffer.\n");
@@ -688,47 +686,27 @@ static unsigned char* OnnxHelper(int& N,
 			for (int w = 0; w < outW; ++w)
 			{
 				size_t dst_idx = (h * outW + w) * 4;
-				size_t src_idx_r = 0 * outH * outW + h * outW + w;
-				size_t src_idx_g = 1 * outH * outW + h * outW + w;
-				size_t src_idx_b = 2 * outH * outW + h * outW + w;
 
+				// For each batch, extract the upscaled channel
+				unsigned char r = static_cast<unsigned char>(std::min(std::max(output_data[0 * 3 * outH * outW + 0 * outH * outW + h * outW + w], 0.0f), 1.0f) * 255.0f);
+				unsigned char g = static_cast<unsigned char>(std::min(std::max(output_data[1 * 3 * outH * outW + 1 * outH * outW + h * outW + w], 0.0f), 1.0f) * 255.0f);
+				unsigned char b = static_cast<unsigned char>(std::min(std::max(output_data[2 * 3 * outH * outW + 2 * outH * outW + h * outW + w], 0.0f), 1.0f) * 255.0f);
+
+				// Alpha: nearest neighbor from input
 				int src_h = h / N;
 				int src_w = w / N;
 				src_h = std::min(std::max(src_h, 0), inHeight - 1);
 				src_w = std::min(std::max(src_w, 0), inWidth - 1);
 				size_t src_alpha_idx = (src_h * inWidth + src_w) * 4 + 3;
 
-				static auto clamp255 = [](float v) -> unsigned char {
-					return static_cast<unsigned char>(std::min(std::max(v, 0.0f), 1.0f) * 255.0f);
-					};
-
-				unsigned char r = clamp255(output_data[src_idx_r]);
-				unsigned char g = clamp255(output_data[src_idx_g]);
-				unsigned char b = clamp255(output_data[src_idx_b]);
 				unsigned char a = !isAlpha ? inputBuffer[src_alpha_idx] : r;
 
 				newBuffer[dst_idx + 0] = r;
 				newBuffer[dst_idx + 1] = g;
 				newBuffer[dst_idx + 2] = b;
 				newBuffer[dst_idx + 3] = a;
-
 			}
 		}
-
-		/*if (OnnxDebug) {
-			Printf("Lump: %d\n", lump);
-			Printf("Input Shape: ");
-			for (auto v : input_shape) Printf("%lld ", v);
-			Printf("\n");
-
-			Printf("ONNX output shape: ");
-			for (auto v : output_shape) Printf("%lld ", v);
-			Printf("\n");
-
-			Printf("Output width: %d, height: %d\n", outWidth, outHeight);
-			size_t expected_size = outWidth * outHeight * 4;
-			Printf("Expected buffer size: %zu\n", expected_size);
-		}*/
 
 		delete[] inputBuffer;
 		return newBuffer;
@@ -745,244 +723,6 @@ static unsigned char* OnnxHelper(int& N,
 	}
 }
 
-static void OnnxHelperBatchRGB(
-    int& N,
-    unsigned char* inputBufferR,
-    unsigned char* inputBufferG,
-    unsigned char* inputBufferB,
-    const int inWidth,
-    const int inHeight,
-    int& outWidth,
-    int& outHeight,
-    const int lump,
-    unsigned char*& outputBufferR,
-    unsigned char*& outputBufferG,
-    unsigned char*& outputBufferB)
-{
-    static const Ort::Env env(OnnxDebug ? ORT_LOGGING_LEVEL_VERBOSE : ORT_LOGGING_LEVEL_ERROR, "onnx", OnnxPrintfLogger, nullptr);
-    Ort::SessionOptions session_options;
-    auto& api = Ort::GetApi();
-    OrtCUDAProviderOptionsV2* cuda_options = nullptr;
-
-    try
-    {
-        auto status = api.CreateCUDAProviderOptions(&cuda_options);
-        if (status != nullptr)
-        {
-            Printf("ONNX Failed to create CUDA provider options: %s\n", api.GetErrorMessage(status));
-            api.ReleaseStatus(status);
-        }
-        else
-        {
-            if (OnnxDebug) Printf("ONNX Created CUDA provider options\n");
-            std::vector<const char*> keys{ "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
-            std::vector<const char*> values{ "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
-
-            auto cudaStatus = api.UpdateCUDAProviderOptions(cuda_options, keys.data(), values.data(), keys.size());
-            if (cudaStatus != nullptr)
-            {
-                Printf("ONNX Failed to UpdateCUDAProviderOptions: %s\n", api.GetErrorMessage(cudaStatus));
-                api.ReleaseStatus(cudaStatus);
-            }
-            else
-            {
-                if (OnnxDebug) Printf("ONNX Updated CUDA provider options\n");
-                auto providerStatus = api.SessionOptionsAppendExecutionProvider_CUDA_V2(session_options, cuda_options);
-                if (providerStatus != nullptr)
-                {
-                    Printf("ONNX Failed to SessionOptionsAppendExecutionProvider_CUDA_V2 %s\n", api.GetErrorMessage(providerStatus));
-                    api.ReleaseStatus(providerStatus);
-                }
-                else
-                {
-                    if (OnnxDebug) Printf("ONNX Updated SessionOptionsAppendExecutionProvider_CUDA_V2\n");
-                }
-            }
-        }
-    }
-    catch (const Ort::Exception& ex)
-    {
-        Printf("ONNX: CUDA provider not available, falling back to CPU: %s\n", ex.what());
-    }
-
-    static bool model_loaded = false;
-    static std::unique_ptr<Ort::Session> session;
-
-    if (!model_loaded)
-    {
-        try
-        {
-            session = std::make_unique<Ort::Session>(env, L"model.onnx", session_options);
-            if (OnnxDebug) Printf("ONNX model loaded successfully.\n");
-            model_loaded = true;
-        }
-        catch (const Ort::Exception& ex)
-        {
-            Printf("Failed to load ONNX model: %s\n", ex.what());
-            model_loaded = false;
-        }
-    }
-
-    if (!model_loaded)
-        return;
-
-    static const Ort::AllocatorWithDefaultOptions allocator;
-    static const auto input_name = session->GetInputNameAllocated(0, allocator);
-    static const auto output_name = session->GetOutputNameAllocated(0, allocator);
-
-    // Prepare input tensor: [3, 3, H, W] (batch=3, channels=3, H, W)
-    std::vector<int64_t> input_shape = { 3, 3, inHeight, inWidth };
-    size_t input_tensor_size = 3 * 3 * inHeight * inWidth;
-    std::vector<float> float32_buffer(input_tensor_size, 0.0f);
-
-    // Fill each batch with a single channel (R, G, B) and handle alpha==0 with nearest neighbor search
-	unsigned char* inputBuffers[3] = { inputBufferR, inputBufferG, inputBufferB };
-	for (int b = 0; b < 3; ++b) // batch: 0=R, 1=G, 2=B
-	{
-		unsigned char* buf = inputBuffers[b];
-		for (int h = 0; h < inHeight; ++h)
-		{
-			for (int w = 0; w < inWidth; ++w)
-			{
-				size_t nhwc_index = (h * inWidth + w) * 4;
-				int alpha = buf[nhwc_index + 3];
-				float value = 0.0f;
-
-				if (alpha == 0)
-				{
-					// Try to find a neighbor with alpha > 0
-					bool found = false;
-					static const int dx[8] = { 0, 0, -1, 1, -1, 1, -1, 1 };
-					static const int dy[8] = { -1, 1, 0, 0, -1, -1, 1, 1 };
-					for (int d = 0; d < 8 && !found; ++d)
-					{
-						int nx = w + dx[d];
-						int ny = h + dy[d];
-						if (nx >= 0 && nx < inWidth && ny >= 0 && ny < inHeight)
-						{
-							size_t nidx = (ny * inWidth + nx) * 4;
-							if (buf[nidx + 3] > 0)
-							{
-								value = static_cast<float>(buf[nidx + b]) / 255.0f;
-								found = true;
-							}
-						}
-					}
-					if (!found)
-					{
-						value = 1.0f; // fallback: white
-					}
-				}
-				else
-				{
-					value = static_cast<float>(buf[nhwc_index + b]) / 255.0f;
-				}
-
-				for (int c = 0; c < 3; ++c)
-				{
-					size_t idx = b * 3 * inHeight * inWidth + c * inHeight * inWidth + h * inWidth + w;
-					float32_buffer[idx] = value;
-				}
-			}
-		}
-	}
-
-    Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    Ort::Value input_tensor = Ort::Value::CreateTensor(
-        memory_info, float32_buffer.data(), float32_buffer.size() * sizeof(float),
-        input_shape.data(), input_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
-
-    std::vector<const char*> input_names = { input_name.get() };
-    std::vector<const char*> output_names = { output_name.get() };
-    auto output_tensors = session->Run(
-        Ort::RunOptions{ nullptr },
-        input_names.data(), &input_tensor, 1,
-        output_names.data(), 1);
-
-    Ort::Value& output_tensor = output_tensors.front();
-    auto output_type_info = output_tensor.GetTensorTypeAndShapeInfo();
-    std::vector<int64_t> output_shape = output_type_info.GetShape();
-
-	api.ReleaseCUDAProviderOptions(cuda_options);
-
-    if (output_shape.size() == 4 && output_shape[0] == 3 && output_shape[1] == 3)
-    {
-        int outH = static_cast<int>(output_shape[2]);
-        int outW = static_cast<int>(output_shape[3]);
-        int Nw = outW / inWidth;
-        int Nh = outH / inHeight;
-        N = std::max({ Nw, Nh });
-
-        outWidth = outW;
-        outHeight = outH;
-        size_t pixel_count = outW * outH;
-
-        // Allocate output buffers
-		outputBufferR = new unsigned char[pixel_count * 4];
-		outputBufferG = new unsigned char[pixel_count * 4];
-		outputBufferB = new unsigned char[pixel_count * 4];
-
-        if (!outputBufferR || !outputBufferG || !outputBufferB)
-        {
-            Printf("Failed to allocate memory for ONNX output buffer.\n");
-            if (outputBufferR) delete[] outputBufferR;
-            if (outputBufferG) delete[] outputBufferG;
-            if (outputBufferB) delete[] outputBufferB;
-            outputBufferR = outputBufferG = outputBufferB = nullptr;
-			outWidth = inWidth;
-			outHeight = inHeight;
-            return;
-        }
-
-        const float* output_data = output_tensor.GetTensorData<float>();
-        for (int h = 0; h < outH; ++h)
-        {
-            for (int w = 0; w < outW; ++w)
-            {
-                size_t dst_idx = (h * outW + w) * 4;
-
-                // For each batch, extract the upscaled channel
-                unsigned char r = static_cast<unsigned char>(std::min(std::max(output_data[0 * 3 * outH * outW + 0 * outH * outW + h * outW + w], 0.0f), 1.0f) * 255.0f);
-                unsigned char g = static_cast<unsigned char>(std::min(std::max(output_data[1 * 3 * outH * outW + 1 * outH * outW + h * outW + w], 0.0f), 1.0f) * 255.0f);
-                unsigned char b = static_cast<unsigned char>(std::min(std::max(output_data[2 * 3 * outH * outW + 2 * outH * outW + h * outW + w], 0.0f), 1.0f) * 255.0f);
-
-                // Alpha: nearest neighbor from input
-                int src_h = h / N;
-                int src_w = w / N;
-                src_h = std::min(std::max(src_h, 0), inHeight - 1);
-                src_w = std::min(std::max(src_w, 0), inWidth - 1);
-                size_t src_alpha_idx = (src_h * inWidth + src_w) * 4 + 3;
-
-                outputBufferR[dst_idx + 0] = r;
-                outputBufferR[dst_idx + 1] = r;
-                outputBufferR[dst_idx + 2] = r;
-                outputBufferR[dst_idx + 3] = inputBufferR[src_alpha_idx];
-
-                outputBufferG[dst_idx + 0] = g;
-                outputBufferG[dst_idx + 1] = g;
-                outputBufferG[dst_idx + 2] = g;
-                outputBufferG[dst_idx + 3] = inputBufferG[src_alpha_idx];
-
-                outputBufferB[dst_idx + 0] = b;
-                outputBufferB[dst_idx + 1] = b;
-                outputBufferB[dst_idx + 2] = b;
-                outputBufferB[dst_idx + 3] = inputBufferB[src_alpha_idx];
-            }
-        }
-    }
-    else
-    {
-        if (OnnxDebug)
-        {
-            Printf("ONNX output shape is unexpected: ");
-            for (auto v : output_shape) Printf("%lld ", v);
-            Printf("\n");
-        }
-        outputBufferR = outputBufferG = outputBufferB = nullptr;
-        return;
-    }
-}
-
 static unsigned char* AiScale(const int N,
 	unsigned char* inputBuffer,
 	const int inWidth,
@@ -993,86 +733,13 @@ static unsigned char* AiScale(const int N,
 {
 	int scale = N;
 
-	// Copy inputBuffer
+	// Copy inputBuffer to alpha buffer
 	const size_t inputSize = inWidth * inHeight * 4;
-	unsigned char* inputBufferAlpha = new unsigned char[inputSize];
+	auto inputBufferAlpha = new unsigned char[inputSize];
 	std::memcpy(inputBufferAlpha, inputBuffer, inputSize);
 
-	unsigned char* inputBufferR;
-	unsigned char* inputBufferG;
-	unsigned char* inputBufferB;
-
-	const int upscaleOption = 1;
-	switch (upscaleOption)
-	{
-	case 0: // ONNX whole buffer
-		inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, lump, false);
-		inputBufferR = inputBuffer;
-		inputBufferG = inputBuffer;
-		inputBufferB = inputBuffer;
-		break;
-	case 1:
-	default: // ONNX per channel, higher quality, worse performance
-		// Make red only pixel buffer
-		inputBufferR = new unsigned char[inputSize];
-		for (int i = 0; i < inWidth * inHeight; ++i)
-		{
-			unsigned char c = inputBuffer[i * 4 + 0];
-			inputBufferR[i * 4 + 0] = c;
-			inputBufferR[i * 4 + 1] = c;
-			inputBufferR[i * 4 + 2] = c;
-			inputBufferR[i * 4 + 3] = inputBuffer[i * 4 + 3];
-		}
-
-		// Make blue only pixel buffer
-		inputBufferG = new unsigned char[inputSize];
-		for (int i = 0; i < inWidth * inHeight; ++i)
-		{
-			unsigned char c = inputBuffer[i * 4 + 1];
-			inputBufferG[i * 4 + 0] = c;
-			inputBufferG[i * 4 + 1] = c;
-			inputBufferG[i * 4 + 2] = c;
-			inputBufferG[i * 4 + 3] = inputBuffer[i * 4 + 3];
-		}
-
-		// Make green only pixel buffer
-		inputBufferB = new unsigned char[inputSize];
-		for (int i = 0; i < inWidth * inHeight; ++i)
-		{
-			unsigned char c = inputBuffer[i * 4 + 2];
-			inputBufferB[i * 4 + 0] = c;
-			inputBufferB[i * 4 + 1] = c;
-			inputBufferB[i * 4 + 2] = c;
-			inputBufferB[i * 4 + 3] = inputBuffer[i * 4 + 3];
-		}
-
-		const bool useBatchRGB = true;
-		if constexpr (useBatchRGB)
-		{
-			unsigned char* outR = nullptr, * outG = nullptr, * outB = nullptr;
-			OnnxHelperBatchRGB(scale, inputBufferR, inputBufferG, inputBufferB, inWidth, inHeight, outWidth, outHeight, lump, outR, outG, outB);
-			if (outR && outG && outB)
-			{
-				auto r = inputBufferR;
-				auto g = inputBufferG;
-				auto b = inputBufferB;
-				inputBufferR = outR;
-				inputBufferG = outG;
-				inputBufferB = outB;
-				delete[] r;
-				delete[] g;
-				delete[] b;
-			}
-		}
-		else
-		{
-			// Call the ONNX helper function on color buffers
-			inputBufferR = OnnxHelper(scale, inputBufferR, inWidth, inHeight, outWidth, outHeight, lump, false);
-			inputBufferG = OnnxHelper(scale, inputBufferG, inWidth, inHeight, outWidth, outHeight, lump, false);
-			inputBufferB = OnnxHelper(scale, inputBufferB, inWidth, inHeight, outWidth, outHeight, lump, false);
-		}		
-		break;
-	}
+	// Upscale color buffer
+	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, lump, false);
 
 	// Upscale the alpha channel separately for better edge quality
 	// From tests, hqNX MMX is better
@@ -1108,31 +775,17 @@ static unsigned char* AiScale(const int N,
 	}
 
 	// Combine upscaled RGB and alpha
-	unsigned char* outputBuffer = new unsigned char[outWidth * outHeight * 4];
+	auto outputBuffer = new unsigned char[outWidth * outHeight * 4];
 	for (int i = 0; i < outWidth * outHeight; ++i)
 	{
-		unsigned char r = inputBufferR[i * 4 + 0]; // Use upscaled R
-		unsigned char g = inputBufferG[i * 4 + 1]; // Use upscaled G
-		unsigned char b = inputBufferB[i * 4 + 2]; // Use upscaled B
-		unsigned char a = inputBufferAlpha[i * 4 + 3]; // Use upscaled alpha
-		outputBuffer[i * 4 + 0] = r;
-		outputBuffer[i * 4 + 1] = g;
-		outputBuffer[i * 4 + 2] = b;
-		outputBuffer[i * 4 + 3] = a;
+		outputBuffer[i * 4 + 0] = inputBuffer[i * 4 + 0];
+		outputBuffer[i * 4 + 1] = inputBuffer[i * 4 + 1];
+		outputBuffer[i * 4 + 2] = inputBuffer[i * 4 + 2];
+		outputBuffer[i * 4 + 3] = inputBufferAlpha[i * 4 + 3];
 	}
 
 	delete[] inputBufferAlpha;
-
-	if (inputBufferR == inputBuffer) {
-		// If we used the same buffer for R, G, B, we can delete it directly
-		delete[] inputBuffer;
-	} else {
-		// Otherwise, delete the separate buffers
-		delete[] inputBufferR;
-		delete[] inputBufferG;
-		delete[] inputBufferB;
-		delete[] inputBuffer;
-	}
+	delete[] inputBuffer;
 	return outputBuffer;
 }
 
