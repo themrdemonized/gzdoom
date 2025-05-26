@@ -19,6 +19,25 @@
 	* "cudnn_cnn64_9.dll"
 	* "cudnn_engines_precompiled64_9.dll", you need to install Nvidia CuDNN Library here (https://developer.nvidia.com/cudnn), and then copy files from `C:\Program Files\NVIDIA\CUDNN\<version>\bin\<version>` folder
 
+#### ONNX Model Specifications
+* Scale: 2
+* Architecture: UltraCompact
+* Author: demonized
+* License: GPL 3.0
+
+* Date: 23.05.2025
+
+* Size: default
+* I/O Channels: 3(RGB)->3(RGB)
+
+* Dataset: Original Doom Sprites, previous Doom Neural Upscale 2X mod by hidfan (https://www.doomworld.com/forum/topic/99021-doom-neural-upscale-2x-v-10/)
+* Dataset Size: ~800
+* OTF (on the fly augmentations):  No
+* Pretrained Model: None
+* Iterations: 300000
+* Batch Size: 64
+* LQ Size: 24
+
 # Welcome to GZDoom!
 
 [![Continuous Integration](https://github.com/ZDoom/gzdoom/actions/workflows/continuous_integration.yml/badge.svg)](https://github.com/ZDoom/gzdoom/actions/workflows/continuous_integration.yml)
