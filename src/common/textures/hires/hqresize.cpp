@@ -879,11 +879,10 @@ static void OnnxHelperBatchRGB(
 					value = static_cast<float>(buf[nhwc_index + b]) / 255.0f;
 				}
 
-				// Only fill the corresponding channel, others remain zero
 				for (int c = 0; c < 3; ++c)
 				{
 					size_t idx = b * 3 * inHeight * inWidth + c * inHeight * inWidth + h * inWidth + w;
-					float32_buffer[idx] = (c == b) ? value : 0.0f;
+					float32_buffer[idx] = value;
 				}
 			}
 		}
@@ -1045,7 +1044,7 @@ static unsigned char* AiScale(const int N,
 			inputBufferB[i * 4 + 3] = inputBuffer[i * 4 + 3];
 		}
 
-		const bool useBatchRGB = false;
+		const bool useBatchRGB = true;
 		if (useBatchRGB)
 		{
 			unsigned char* outR = nullptr, * outG = nullptr, * outB = nullptr;
