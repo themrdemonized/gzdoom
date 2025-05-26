@@ -497,7 +497,8 @@ static unsigned char* OnnxHelper(const int N,
 	const int inHeight,
 	int& outWidth,
 	int& outHeight,
-	const int lump)
+	const int lump,
+	bool isAlpha)
 
 {
 	static const Ort::Env env(OnnxDebug ? ORT_LOGGING_LEVEL_VERBOSE : ORT_LOGGING_LEVEL_ERROR, "onnx", OnnxPrintfLogger, nullptr);
@@ -700,7 +701,7 @@ static unsigned char* OnnxHelper(const int N,
 				unsigned char r = clamp255(output_data[src_idx_r]);
 				unsigned char g = clamp255(output_data[src_idx_g]);
 				unsigned char b = clamp255(output_data[src_idx_b]);
-				unsigned char a = inputBuffer[src_alpha_idx];
+				unsigned char a = !isAlpha ? inputBuffer[src_alpha_idx] : 0;
 
 				newBuffer[dst_idx + 0] = r;
 				newBuffer[dst_idx + 1] = g;
@@ -742,6 +743,73 @@ static unsigned char* OnnxHelper(const int N,
 		return inputBuffer;
 	}
 
+	return inputBuffer;
+}
+
+static unsigned char* AiScale(const int N,
+	unsigned char* inputBuffer,
+	const int inWidth,
+	const int inHeight,
+	int& outWidth,
+	int& outHeight,
+	const int lump)
+{
+	// Copy inputBuffer
+	const size_t inputSize = inWidth * inHeight * 4;
+	unsigned char* inputBufferCopy = new unsigned char[inputSize];
+	std::memcpy(inputBufferCopy, inputBuffer, inputSize);
+
+	// Call the ONNX helper function on initial buffer
+	inputBuffer = OnnxHelper(N, inputBuffer, inWidth, inHeight, outWidth, outHeight, lump, false);
+
+	// Upscale the alpha channel separately for better edge quality
+	// From tests, hqNX MMX is better
+	const int alphaScaleOption = 2;
+	switch (alphaScaleOption)
+	{
+	case 0: // ScaleNX
+		inputBufferCopy = scaleNxHelper(&scale2x, 2, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
+
+		// Combine upscaled RGB and alpha
+		for (int i = 0; i < outWidth * outHeight; ++i)
+		{
+			unsigned char a = inputBufferCopy[i * 4 + 3]; // Use upscaled alpha
+			inputBuffer[i * 4 + 3] = a;
+		}
+		break;
+	case 1: // ONNX
+		for (int i = 0; i < inWidth * inHeight; ++i)
+		{
+			unsigned char a = inputBufferCopy[i * 4 + 3];
+			inputBufferCopy[i * 4 + 0] = a;
+			inputBufferCopy[i * 4 + 1] = a;
+			inputBufferCopy[i * 4 + 2] = a;
+			inputBufferCopy[i * 4 + 3] = 255;
+		}
+		inputBufferCopy = OnnxHelper(N, inputBufferCopy, inWidth, inHeight, outWidth, outHeight, lump, true);
+
+		// Combine upscaled RGB and alpha
+		for (int i = 0; i < outWidth * outHeight; ++i)
+		{
+			unsigned char a = inputBufferCopy[i * 4 + 0]; // Use upscaled alpha
+			inputBuffer[i * 4 + 3] = a;
+		}
+		break;
+	case 2: // hqNX
+#ifdef HAVE_MMX
+		inputBufferCopy = hqNxAsmHelper(&HQnX_asm::hq2x_32, 2, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
+#else
+		inputBufferCopy = hqNxHelper(&hq2x_32, 2, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
+#endif //HAVE_MMX
+
+		// Combine upscaled RGB and alpha
+		for (int i = 0; i < outWidth * outHeight; ++i)
+		{
+			unsigned char a = inputBufferCopy[i * 4 + 3]; // Use upscaled alpha
+			inputBuffer[i * 4 + 3] = a;
+		}
+		break;
+	}
 	return inputBuffer;
 }
 
@@ -819,7 +887,7 @@ void FTexture::CreateUpsampledTextureBuffer(FTextureBuffer &texbuffer, bool hasA
 			texbuffer.mBuffer = xbrzHelper(xbrzOldScale, mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
 		else if (type == 6) {
 			mult = 2;
-			texbuffer.mBuffer = OnnxHelper(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight, this->GetSourceLump());
+			texbuffer.mBuffer = AiScale(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight, this->GetSourceLump());
 			//texbuffer.mBuffer = normalNx(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
 		}
 		else
