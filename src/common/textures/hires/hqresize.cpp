@@ -655,6 +655,8 @@ static unsigned char* OnnxHelper(int& N,
 	std::vector<int64_t> output_shape = output_type_info.GetShape();
 	size_t output_tensor_size = output_type_info.GetElementCount();
 
+	api.ReleaseCUDAProviderOptions(cuda_options);
+
 	// 5. Set outWidth and outHeight from output shape
 	if (output_shape.size() == 4 && output_shape[0] == 1 && output_shape[1] == 3)
 	{
@@ -675,6 +677,8 @@ static unsigned char* OnnxHelper(int& N,
 		if (!newBuffer)
 		{
 			Printf("Failed to allocate memory for ONNX output buffer.\n");
+			outWidth = inWidth;
+			outHeight = inHeight;
 			return inputBuffer;
 		}
 
@@ -726,9 +730,6 @@ static unsigned char* OnnxHelper(int& N,
 			Printf("Expected buffer size: %zu\n", expected_size);
 		}*/
 
-		// Finally, don't forget to release the provider options
-		api.ReleaseCUDAProviderOptions(cuda_options);
-
 		delete[] inputBuffer;
 		return newBuffer;
 	} 
@@ -742,8 +743,6 @@ static unsigned char* OnnxHelper(int& N,
 		}
 		return inputBuffer;
 	}
-
-	return inputBuffer;
 }
 
 static void OnnxHelperBatchRGB(
@@ -904,6 +903,8 @@ static void OnnxHelperBatchRGB(
     auto output_type_info = output_tensor.GetTensorTypeAndShapeInfo();
     std::vector<int64_t> output_shape = output_type_info.GetShape();
 
+	api.ReleaseCUDAProviderOptions(cuda_options);
+
     if (output_shape.size() == 4 && output_shape[0] == 3 && output_shape[1] == 3)
     {
         int outH = static_cast<int>(output_shape[2]);
@@ -917,16 +918,19 @@ static void OnnxHelperBatchRGB(
         size_t pixel_count = outW * outH;
 
         // Allocate output buffers
-        outputBufferR = static_cast<unsigned char*>(std::malloc(pixel_count * 4));
-        outputBufferG = static_cast<unsigned char*>(std::malloc(pixel_count * 4));
-        outputBufferB = static_cast<unsigned char*>(std::malloc(pixel_count * 4));
+		outputBufferR = new unsigned char[pixel_count * 4];
+		outputBufferG = new unsigned char[pixel_count * 4];
+		outputBufferB = new unsigned char[pixel_count * 4];
+
         if (!outputBufferR || !outputBufferG || !outputBufferB)
         {
             Printf("Failed to allocate memory for ONNX output buffer.\n");
-            if (outputBufferR) std::free(outputBufferR);
-            if (outputBufferG) std::free(outputBufferG);
-            if (outputBufferB) std::free(outputBufferB);
+            if (outputBufferR) delete[] outputBufferR;
+            if (outputBufferG) delete[] outputBufferG;
+            if (outputBufferB) delete[] outputBufferB;
             outputBufferR = outputBufferG = outputBufferB = nullptr;
+			outWidth = inWidth;
+			outHeight = inHeight;
             return;
         }
 
@@ -965,8 +969,6 @@ static void OnnxHelperBatchRGB(
                 outputBufferB[dst_idx + 3] = inputBufferB[src_alpha_idx];
             }
         }
-
-        api.ReleaseCUDAProviderOptions(cuda_options);
     }
     else
     {
@@ -1129,6 +1131,7 @@ static unsigned char* AiScale(const int N,
 		delete[] inputBufferR;
 		delete[] inputBufferG;
 		delete[] inputBufferB;
+		delete[] inputBuffer;
 	}
 	return outputBuffer;
 }
