@@ -1047,7 +1047,7 @@ static unsigned char* AiScale(const int N,
 		}
 
 		const bool useBatchRGB = true;
-		if (useBatchRGB)
+		if constexpr (useBatchRGB)
 		{
 			unsigned char* outR = nullptr, * outG = nullptr, * outB = nullptr;
 			OnnxHelperBatchRGB(scale, inputBufferR, inputBufferG, inputBufferB, inWidth, inHeight, outWidth, outHeight, lump, outR, outG, outB);
