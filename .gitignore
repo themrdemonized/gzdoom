@@ -32,3 +32,4 @@
 /build_vc2019-32
 /build__
 gzdoom-crash.log
+libraries/onnxruntime-win-x64-gpu-1.22.0
