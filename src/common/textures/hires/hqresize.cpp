@@ -491,7 +491,7 @@ static void ORT_API_CALL OnnxPrintfLogger(
 }
 
 static bool OnnxDebug = false;
-static unsigned char* OnnxHelper(const int N,
+static unsigned char* OnnxHelper(int& N,
 	unsigned char* inputBuffer,
 	const int inWidth,
 	const int inHeight,
@@ -664,7 +664,7 @@ static unsigned char* OnnxHelper(const int N,
 
 		int Nw = outW / inWidth;
 		int Nh = outH / inHeight;
-		int N = (Nw == Nh) ? Nw : -1;
+		N = (Nw == Nh) ? Nw : -1;
 		if (OnnxDebug) Printf("Detected ONNX scaling factor N = %d\n", N);
 
 		outWidth = outW;
@@ -760,7 +760,8 @@ static unsigned char* AiScale(const int N,
 	std::memcpy(inputBufferCopy, inputBuffer, inputSize);
 
 	// Call the ONNX helper function on initial buffer
-	inputBuffer = OnnxHelper(N, inputBuffer, inWidth, inHeight, outWidth, outHeight, lump, false);
+	int scale = N;
+	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, lump, false);
 
 	// Upscale the alpha channel separately for better edge quality
 	// From tests, hqNX MMX is better
@@ -768,7 +769,7 @@ static unsigned char* AiScale(const int N,
 	switch (alphaScaleOption)
 	{
 	case 0: // ScaleNX
-		inputBufferCopy = scaleNxHelper(&scale2x, 2, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
+		inputBufferCopy = scaleNxHelper(scale == 4 ? &scale4x : scale == 3 ? &scale3x : &scale2x, scale, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
 
 		// Combine upscaled RGB and alpha
 		for (int i = 0; i < outWidth * outHeight; ++i)
@@ -786,7 +787,7 @@ static unsigned char* AiScale(const int N,
 			inputBufferCopy[i * 4 + 2] = a;
 			inputBufferCopy[i * 4 + 3] = 255;
 		}
-		inputBufferCopy = OnnxHelper(N, inputBufferCopy, inWidth, inHeight, outWidth, outHeight, lump, true);
+		inputBufferCopy = OnnxHelper(scale, inputBufferCopy, inWidth, inHeight, outWidth, outHeight, lump, true);
 
 		// Combine upscaled RGB and alpha
 		for (int i = 0; i < outWidth * outHeight; ++i)
@@ -797,9 +798,14 @@ static unsigned char* AiScale(const int N,
 		break;
 	case 2: // hqNX
 #ifdef HAVE_MMX
-		inputBufferCopy = hqNxAsmHelper(&HQnX_asm::hq2x_32, 2, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
+		auto func = &HQnX_asm::hq2x_32;
+		if (scale == 4)
+			func = &HQnX_asm::hq4x_32;
+		else if (scale == 3)
+			func = &HQnX_asm::hq3x_32;
+		inputBufferCopy = hqNxAsmHelper(func, scale, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
 #else
-		inputBufferCopy = hqNxHelper(&hq2x_32, 2, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
+		inputBufferCopy = hqNxHelper(scale == 4 ? &hq4x_32 : scale == 3 ? &hq3x_32 : &hq2x_32, scale, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
 #endif //HAVE_MMX
 
 		// Combine upscaled RGB and alpha
