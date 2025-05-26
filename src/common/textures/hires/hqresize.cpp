@@ -47,6 +47,13 @@
 #include "texturemanager.h"
 #include "printf.h"
 
+#include <vector>
+#include <cstdint>
+#include <cstring>
+#include <cmath>
+#include <onnxruntime_cxx_api.h>
+#include <onnxruntime_c_api.h>
+
 int upscalemask;
 
 EXTERN_CVAR(Int, gl_texture_hqresizemult)
@@ -408,6 +415,239 @@ static unsigned char *xbrzHelper( void (*xbrzFunction) ( size_t, const uint32_t*
 	return newBuffer;
 }
 
+// Helper: Convert float32 to IEEE 754 float16 (not handling NaN/Inf for brevity)
+inline uint16_t float32_to_float16(float value) {
+	uint32_t bits;
+	std::memcpy(&bits, &value, sizeof(bits));
+	uint32_t sign = (bits >> 16) & 0x8000;
+	uint32_t mantissa = bits & 0x007FFFFF;
+	int32_t exp = ((bits >> 23) & 0xFF) - 127 + 15;
+	if (exp <= 0) return sign; // underflow to zero
+	if (exp >= 31) return sign | 0x7C00; // overflow to Inf
+	return sign | (exp << 10) | (mantissa >> 13);
+}
+
+// Convert IEEE 754 float16 to float32
+float float16_to_float32(uint16_t h) {
+	uint16_t h_exp = (h & 0x7C00) >> 10;
+	uint16_t h_sig = h & 0x03FF;
+	uint32_t f_sgn = ((uint32_t)h & 0x8000) << 16;
+	uint32_t f_exp, f_sig;
+
+	if (h_exp == 0) {
+		// Zero / subnormal
+		if (h_sig == 0) {
+			f_exp = 0;
+			f_sig = 0;
+		} else {
+			// Normalize subnormal
+			h_exp = 1;
+			while ((h_sig & 0x0400) == 0) {
+				h_sig <<= 1;
+				h_exp--;
+			}
+			h_sig &= 0x03FF;
+			f_exp = (127 - 15 - h_exp) << 23;
+			f_sig = (uint32_t)h_sig << 13;
+		}
+	} else if (h_exp == 0x1F) {
+		// Inf/NaN
+		f_exp = 0xFF << 23;
+		f_sig = (uint32_t)h_sig << 13;
+	} else {
+		// Normalized
+		f_exp = ((h_exp - 15 + 127) & 0xFF) << 23;
+		f_sig = (uint32_t)h_sig << 13;
+	}
+	uint32_t f = f_sgn | f_exp | f_sig;
+	float result;
+	std::memcpy(&result, &f, sizeof(result));
+	return result;
+}
+
+// Custom logging callback for ONNX Runtime
+void ORT_API_CALL OnnxPrintfLogger(
+	void* /*param*/,
+	OrtLoggingLevel severity,
+	const char* category,
+	const char* logid,
+	const char* code_location,
+	const char* message)
+{
+	// You can format the message as you like
+	Printf("[ONNX][%s][%s][%s] %s\n", logid, category, code_location, message);
+}
+
+static unsigned char* OnnxHelper(const int N,
+	unsigned char* inputBuffer,
+	const int inWidth,
+	const int inHeight,
+	int& outWidth,
+	int& outHeight,
+	const int lump)
+{
+	static Ort::Env env(ORT_LOGGING_LEVEL_VERBOSE, "onnx", OnnxPrintfLogger, nullptr);
+	Ort::SessionOptions session_options;
+	
+	/*OrtCUDAProviderOptionsV2* cuda_options = nullptr;
+	const OrtApi* api = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+	api->CreateCUDAProviderOptions(&cuda_options);
+	std::vector<const char*> keys{ "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
+	std::vector<const char*> values{ "0", "2147483648", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
+	api->UpdateCUDAProviderOptions(cuda_options, keys.data(), values.data(), keys.size());
+	api->SessionOptionsAppendExecutionProvider_CUDA_V2(session_options, cuda_options);*/
+
+	static bool model_loaded = false;
+	static std::unique_ptr<Ort::Session> session;
+
+	if (!model_loaded)
+	{
+		try
+		{
+			session = std::make_unique<Ort::Session>(env, L"model.onnx", session_options);
+			Printf("ONNX model loaded successfully.\n");
+			model_loaded = true;
+		} catch (const Ort::Exception& ex)
+		{
+			Printf("Failed to load ONNX model: %s\n", ex.what());
+			model_loaded = false;
+		}
+	}
+
+	// If model failed to load, skip further ONNX processing
+	if (!model_loaded)
+		return inputBuffer;
+
+	// 1. Get input/output names
+	Ort::AllocatorWithDefaultOptions allocator;
+	auto input_name = session->GetInputNameAllocated(0, allocator);
+	auto output_name = session->GetOutputNameAllocated(0, allocator);
+
+	Printf("Input name: %s\n", input_name.get());
+	Printf("Output name: %s\n", output_name.get());
+
+	// 2. Prepare input tensor (convert to float16)
+	std::vector<int64_t> input_shape = { 1, 3, inHeight, inWidth };
+	size_t input_tensor_size = 1 * 3 * inHeight * inWidth;
+	std::vector<uint16_t> float16_buffer(input_tensor_size);
+
+	// Convert RGBA NHWC to RGB NCHW and float16
+	static const int argb_channel_map[3] = { 0, 1, 2 }; // R, G, B offsets in RGBA
+	for (int w = 0; w < inWidth; ++w) { 
+		for (int h = 0; h < inHeight; ++h) {
+			for (int c = 0; c < 3; ++c) { // Only R, G, B
+				size_t nhwc_index = (h * inWidth + w) * 4 + argb_channel_map[c]; // RGBA
+				size_t nchw_index = c * inHeight * inWidth + h * inWidth + w;
+				float normalized = static_cast<float>(inputBuffer[nhwc_index]) / 255.0f;
+				float16_buffer[nchw_index] = float32_to_float16(normalized);
+
+				/*Printf("Pixel %d\n", nhwc_index / 4);
+				Printf("inputBuffer[%zu] = %d\n", nhwc_index, inputBuffer[nhwc_index]);
+				Printf("normalized = %f\n", normalized);
+				Printf("float16 raw = 0x%04x\n", float16_buffer[nchw_index]);
+				Printf("float32 = %f\n", float16_to_float32(float16_buffer[nchw_index]));*/
+
+			}
+		}
+	}
+
+	/*for (int i = 0; i < 64; i += 4) {
+		Printf("Pixel %d: R=%d G=%d B=%d A=%d\n", i / 4, inputBuffer[i], inputBuffer[i + 1], inputBuffer[i + 2], inputBuffer[i + 3]);
+	}
+
+	for (int i = 0; i < 64; i += 4) {
+		Printf("float16 Pixel %d: R=%.2f G=%.2f B=%.2f\n", i / 4,
+			float16_to_float32(float16_buffer[i]),
+			float16_to_float32(float16_buffer[i + 1]),
+			float16_to_float32(float16_buffer[i + 2]));
+	}*/
+
+
+	Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+	Ort::Value input_tensor = Ort::Value::CreateTensor(
+		memory_info, float16_buffer.data(), float16_buffer.size() * sizeof(uint16_t),
+		input_shape.data(), input_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16);
+
+	// 3. Run inference
+	std::vector<const char*> input_names = { input_name.get() };
+	std::vector<const char*> output_names = { output_name.get() };
+	auto output_tensors = session->Run(
+		Ort::RunOptions{ nullptr },
+		input_names.data(), &input_tensor, 1,
+		output_names.data(), 1);
+
+	// 4. Get output tensor info
+	Ort::Value& output_tensor = output_tensors.front();
+	auto output_type_info = output_tensor.GetTensorTypeAndShapeInfo();
+	std::vector<int64_t> output_shape = output_type_info.GetShape();
+	size_t output_tensor_size = output_type_info.GetElementCount();
+
+	// 7. Set outWidth and outHeight from output shape
+	if (output_shape.size() == 4 && output_shape[0] == 1 && output_shape[1] == 3) {
+		// Model output: [1, 3, H, W] (NCHW, RGB)
+		int outH = static_cast<int>(output_shape[2]);
+		int outW = static_cast<int>(output_shape[3]);
+
+		int Nw = outW / inWidth;
+		int Nh = outH / inHeight;
+		int N = (Nw == Nh) ? Nw : -1;
+		Printf("Detected ONNX scaling factor N = %d\n", N);
+
+		outWidth = outW;
+		outHeight = outH;
+		size_t pixel_count = outW * outH;
+
+		unsigned char* newBuffer = static_cast<unsigned char*>(std::malloc(pixel_count * 4));
+		if (!newBuffer) {
+			Printf("Failed to allocate memory for ONNX output buffer.\n");
+			return inputBuffer;
+		}
+
+		const uint8_t* output_data = output_tensor.GetTensorData<uint8_t>();
+		for (int h = 0; h < outH; ++h) {
+			for (int w = 0; w < outW; ++w) {
+				size_t dst_idx = (h * outW + w) * 4;
+				size_t src_idx_r = 0 * outH * outW + h * outW + w;
+				size_t src_idx_g = 1 * outH * outW + h * outW + w;
+				size_t src_idx_b = 2 * outH * outW + h * outW + w;
+
+				// Compute corresponding input pixel for alpha
+				int src_h = h / N;
+				int src_w = w / N;
+				size_t src_alpha_idx = (src_h * inWidth + src_w) * 4 + 3;
+
+				newBuffer[dst_idx + 0] = output_data[src_idx_r];
+				newBuffer[dst_idx + 1] = output_data[src_idx_g];
+				newBuffer[dst_idx + 2] = output_data[src_idx_b];
+				newBuffer[dst_idx + 3] = inputBuffer[src_alpha_idx];
+			}
+		}
+
+		Printf("Lump: %d\n", lump);
+		Printf("Input Shape: ");
+		for (auto v : input_shape) Printf("%lld ", v);
+		Printf("\n");
+
+		Printf("ONNX output shape: ");
+		for (auto v : output_shape) Printf("%lld ", v);
+		Printf("\n");
+
+		Printf("Output width: %d, height: %d\n", outWidth, outHeight);
+		size_t expected_size = outWidth * outHeight * 4;
+		Printf("Expected buffer size: %zu\n", expected_size);
+
+		delete[] inputBuffer;
+		return newBuffer;
+	} else {
+		Printf("ONNX output shape is unexpected: ");
+		for (auto v : output_shape) Printf("%lld ", v);
+		Printf("\n");
+		return inputBuffer;
+	}
+
+	return inputBuffer;
+}
+
 static void xbrzOldScale(size_t factor, const uint32_t* src, uint32_t* trg, int srcWidth, int srcHeight, xbrz::ColorFormat colFmt, const xbrz_old::ScalerCfg& cfg, int yFirst, int yLast)
 {
 	xbrz_old::scale(factor, src, trg, srcWidth, srcHeight, cfg, yFirst, yLast);
@@ -480,8 +720,11 @@ void FTexture::CreateUpsampledTextureBuffer(FTextureBuffer &texbuffer, bool hasA
 			texbuffer.mBuffer = xbrzHelper(xbrz::scale, mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
 		else if (type == 5)
 			texbuffer.mBuffer = xbrzHelper(xbrzOldScale, mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
-		else if (type == 6)
-			texbuffer.mBuffer = normalNx(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
+		else if (type == 6) {
+			mult = 2;
+			texbuffer.mBuffer = OnnxHelper(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight, this->GetSourceLump());
+			//texbuffer.mBuffer = normalNx(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
+		}
 		else
 			return;
 	}
