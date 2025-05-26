@@ -490,6 +490,7 @@ static void ORT_API_CALL OnnxPrintfLogger(
 	Printf("[ONNX][%s][%s][%s] %s\n", logid, category, code_location, message);
 }
 
+static bool OnnxDebug = false;
 static unsigned char* OnnxHelper(const int N,
 	unsigned char* inputBuffer,
 	const int inWidth,
@@ -499,12 +500,12 @@ static unsigned char* OnnxHelper(const int N,
 	const int lump)
 
 {
-	static const Ort::Env env(ORT_LOGGING_LEVEL_VERBOSE, "onnx", OnnxPrintfLogger, nullptr);
+	static const Ort::Env env(OnnxDebug ? ORT_LOGGING_LEVEL_VERBOSE : ORT_LOGGING_LEVEL_ERROR, "onnx", OnnxPrintfLogger, nullptr);
 	Ort::SessionOptions session_options;
 	auto& api = Ort::GetApi();
 	OrtCUDAProviderOptionsV2* cuda_options = nullptr;
-	
-	try 
+
+	try
 	{
 		auto status = api.CreateCUDAProviderOptions(&cuda_options);
 		if (status != nullptr)
@@ -514,7 +515,7 @@ static unsigned char* OnnxHelper(const int N,
 		} 
 		else
 		{
-			Printf("ONNX Created CUDA provider options\n");
+			if (OnnxDebug) Printf("ONNX Created CUDA provider options\n");
 			std::vector<const char*> keys{ "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
 			std::vector<const char*> values{ "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
 
@@ -526,7 +527,7 @@ static unsigned char* OnnxHelper(const int N,
 			} 
 			else
 			{
-				Printf("ONNX Updated CUDA provider options\n");
+				if (OnnxDebug) Printf("ONNX Updated CUDA provider options\n");
 				auto providerStatus = api.SessionOptionsAppendExecutionProvider_CUDA_V2(session_options, cuda_options);
 				if (providerStatus != nullptr)
 				{
@@ -535,11 +536,11 @@ static unsigned char* OnnxHelper(const int N,
 				} 
 				else
 				{
-					Printf("ONNX Updated SessionOptionsAppendExecutionProvider_CUDA_V2\n");
+					if (OnnxDebug) Printf("ONNX Updated SessionOptionsAppendExecutionProvider_CUDA_V2\n");
 				}
 			}
 		}
-	}
+	} 
 	catch (const Ort::Exception& ex)
 	{
 		Printf("ONNX: CUDA provider not available, falling back to CPU: %s\n", ex.what());
@@ -553,7 +554,7 @@ static unsigned char* OnnxHelper(const int N,
 		try
 		{
 			session = std::make_unique<Ort::Session>(env, L"model.onnx", session_options);
-			Printf("ONNX model loaded successfully.\n");
+			if (OnnxDebug) Printf("ONNX model loaded successfully.\n");
 			model_loaded = true;
 		} 
 		catch (const Ort::Exception& ex)
@@ -572,8 +573,10 @@ static unsigned char* OnnxHelper(const int N,
 	static const auto input_name = session->GetInputNameAllocated(0, allocator);
 	static const auto output_name = session->GetOutputNameAllocated(0, allocator);
 
-	Printf("Input name: %s\n", input_name.get());
-	Printf("Output name: %s\n", output_name.get());
+	if (OnnxDebug) {
+		Printf("Input name: %s\n", input_name.get());
+		Printf("Output name: %s\n", output_name.get());
+	}
 
 	// 2. Prepare input tensor (convert to float32)
 	std::vector<int64_t> input_shape = { 1, 3, inHeight, inWidth };
@@ -617,7 +620,8 @@ static unsigned char* OnnxHelper(const int N,
 					// Fallback: white
 					rgb[0] = rgb[1] = rgb[2] = 1.0f;
 				}
-			} else
+			} 
+			else
 			{
 				for (int c = 0; c < 3; ++c)
 					rgb[rgba_channel_map[c]] = static_cast<float>(inputBuffer[nhwc_index + rgba_channel_map[c]]) / 255.0f;
@@ -660,7 +664,7 @@ static unsigned char* OnnxHelper(const int N,
 		int Nw = outW / inWidth;
 		int Nh = outH / inHeight;
 		int N = (Nw == Nh) ? Nw : -1;
-		Printf("Detected ONNX scaling factor N = %d\n", N);
+		if (OnnxDebug) Printf("Detected ONNX scaling factor N = %d\n", N);
 
 		outWidth = outW;
 		outHeight = outH;
@@ -706,18 +710,20 @@ static unsigned char* OnnxHelper(const int N,
 			}
 		}
 
-		Printf("Lump: %d\n", lump);
-		Printf("Input Shape: ");
-		for (auto v : input_shape) Printf("%lld ", v);
-		Printf("\n");
+		/*if (OnnxDebug) {
+			Printf("Lump: %d\n", lump);
+			Printf("Input Shape: ");
+			for (auto v : input_shape) Printf("%lld ", v);
+			Printf("\n");
 
-		Printf("ONNX output shape: ");
-		for (auto v : output_shape) Printf("%lld ", v);
-		Printf("\n");
+			Printf("ONNX output shape: ");
+			for (auto v : output_shape) Printf("%lld ", v);
+			Printf("\n");
 
-		Printf("Output width: %d, height: %d\n", outWidth, outHeight);
-		size_t expected_size = outWidth * outHeight * 4;
-		Printf("Expected buffer size: %zu\n", expected_size);
+			Printf("Output width: %d, height: %d\n", outWidth, outHeight);
+			size_t expected_size = outWidth * outHeight * 4;
+			Printf("Expected buffer size: %zu\n", expected_size);
+		}*/
 
 		// Finally, don't forget to release the provider options
 		api.ReleaseCUDAProviderOptions(cuda_options);
@@ -727,9 +733,12 @@ static unsigned char* OnnxHelper(const int N,
 	} 
 	else
 	{
-		Printf("ONNX output shape is unexpected: ");
-		for (auto v : output_shape) Printf("%lld ", v);
-		Printf("\n");
+		if (OnnxDebug)
+		{
+			Printf("ONNX output shape is unexpected: ");
+			for (auto v : output_shape) Printf("%lld ", v);
+			Printf("\n");
+		}
 		return inputBuffer;
 	}
 
