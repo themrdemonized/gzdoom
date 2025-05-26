@@ -664,7 +664,7 @@ static unsigned char* OnnxHelper(int& N,
 
 		int Nw = outW / inWidth;
 		int Nh = outH / inHeight;
-		N = (Nw == Nh) ? Nw : -1;
+		N = std::max({ Nw, Nh });
 		if (OnnxDebug) Printf("Detected ONNX scaling factor N = %d\n", N);
 
 		outWidth = outW;
@@ -701,7 +701,7 @@ static unsigned char* OnnxHelper(int& N,
 				unsigned char r = clamp255(output_data[src_idx_r]);
 				unsigned char g = clamp255(output_data[src_idx_g]);
 				unsigned char b = clamp255(output_data[src_idx_b]);
-				unsigned char a = !isAlpha ? inputBuffer[src_alpha_idx] : 0;
+				unsigned char a = !isAlpha ? inputBuffer[src_alpha_idx] : r;
 
 				newBuffer[dst_idx + 0] = r;
 				newBuffer[dst_idx + 1] = g;
@@ -754,14 +754,67 @@ static unsigned char* AiScale(const int N,
 	int& outHeight,
 	const int lump)
 {
+	int scale = N;
+
 	// Copy inputBuffer
 	const size_t inputSize = inWidth * inHeight * 4;
-	unsigned char* inputBufferCopy = new unsigned char[inputSize];
-	std::memcpy(inputBufferCopy, inputBuffer, inputSize);
+	unsigned char* inputBufferAlpha = new unsigned char[inputSize];
+	std::memcpy(inputBufferAlpha, inputBuffer, inputSize);
 
-	// Call the ONNX helper function on initial buffer
-	int scale = N;
-	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, lump, false);
+	unsigned char* inputBufferR;
+	unsigned char* inputBufferG;
+	unsigned char* inputBufferB;
+
+	const int upscaleOption = 1;
+	switch (upscaleOption)
+	{
+	case 0: // ONNX whole buffer
+		inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, lump, false);
+		inputBufferR = inputBuffer;
+		inputBufferG = inputBuffer;
+		inputBufferB = inputBuffer;
+		break;
+	case 1:
+	default: // ONNX per channel, higher quality, worse performance
+		// Make red only pixel buffer
+		inputBufferR = new unsigned char[inputSize];
+		for (int i = 0; i < inWidth * inHeight; ++i)
+		{
+			unsigned char c = inputBuffer[i * 4 + 0];
+			inputBufferR[i * 4 + 0] = c;
+			inputBufferR[i * 4 + 1] = c;
+			inputBufferR[i * 4 + 2] = c;
+			inputBufferR[i * 4 + 3] = inputBuffer[i * 4 + 3];
+		}
+
+		// Make blue only pixel buffer
+		inputBufferG = new unsigned char[inputSize];
+		for (int i = 0; i < inWidth * inHeight; ++i)
+		{
+			unsigned char c = inputBuffer[i * 4 + 1];
+			inputBufferG[i * 4 + 0] = c;
+			inputBufferG[i * 4 + 1] = c;
+			inputBufferG[i * 4 + 2] = c;
+			inputBufferG[i * 4 + 3] = inputBuffer[i * 4 + 3];
+		}
+
+		// Make green only pixel buffer
+		inputBufferB = new unsigned char[inputSize];
+		for (int i = 0; i < inWidth * inHeight; ++i)
+		{
+			unsigned char c = inputBuffer[i * 4 + 2];
+			inputBufferB[i * 4 + 0] = c;
+			inputBufferB[i * 4 + 1] = c;
+			inputBufferB[i * 4 + 2] = c;
+			inputBufferB[i * 4 + 3] = inputBuffer[i * 4 + 3];
+		}
+
+		// Call the ONNX helper function on color buffers
+		inputBufferR = OnnxHelper(scale, inputBufferR, inWidth, inHeight, outWidth, outHeight, lump, false);
+		inputBufferG = OnnxHelper(scale, inputBufferG, inWidth, inHeight, outWidth, outHeight, lump, false);
+		inputBufferB = OnnxHelper(scale, inputBufferB, inWidth, inHeight, outWidth, outHeight, lump, false);
+		break;
+	}
 
 	// Upscale the alpha channel separately for better edge quality
 	// From tests, hqNX MMX is better
@@ -769,54 +822,59 @@ static unsigned char* AiScale(const int N,
 	switch (alphaScaleOption)
 	{
 	case 0: // ScaleNX
-		inputBufferCopy = scaleNxHelper(scale == 4 ? &scale4x : scale == 3 ? &scale3x : &scale2x, scale, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
-
-		// Combine upscaled RGB and alpha
-		for (int i = 0; i < outWidth * outHeight; ++i)
-		{
-			unsigned char a = inputBufferCopy[i * 4 + 3]; // Use upscaled alpha
-			inputBuffer[i * 4 + 3] = a;
-		}
+		inputBufferAlpha = scaleNxHelper(scale == 4 ? &scale4x : scale == 3 ? &scale3x : &scale2x, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
 		break;
 	case 1: // ONNX
 		for (int i = 0; i < inWidth * inHeight; ++i)
 		{
-			unsigned char a = inputBufferCopy[i * 4 + 3];
-			inputBufferCopy[i * 4 + 0] = a;
-			inputBufferCopy[i * 4 + 1] = a;
-			inputBufferCopy[i * 4 + 2] = a;
-			inputBufferCopy[i * 4 + 3] = 255;
+			unsigned char a = inputBufferAlpha[i * 4 + 3];
+			inputBufferAlpha[i * 4 + 0] = a;
+			inputBufferAlpha[i * 4 + 1] = a;
+			inputBufferAlpha[i * 4 + 2] = a;
+			inputBufferAlpha[i * 4 + 3] = 255;
 		}
-		inputBufferCopy = OnnxHelper(scale, inputBufferCopy, inWidth, inHeight, outWidth, outHeight, lump, true);
-
-		// Combine upscaled RGB and alpha
-		for (int i = 0; i < outWidth * outHeight; ++i)
-		{
-			unsigned char a = inputBufferCopy[i * 4 + 0]; // Use upscaled alpha
-			inputBuffer[i * 4 + 3] = a;
-		}
+		inputBufferAlpha = OnnxHelper(scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight, lump, true);
 		break;
-	case 2: // hqNX
+	case 2:
+	default:// hqNX
 #ifdef HAVE_MMX
 		auto func = &HQnX_asm::hq2x_32;
 		if (scale == 4)
 			func = &HQnX_asm::hq4x_32;
 		else if (scale == 3)
 			func = &HQnX_asm::hq3x_32;
-		inputBufferCopy = hqNxAsmHelper(func, scale, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
+		inputBufferAlpha = hqNxAsmHelper(func, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
 #else
-		inputBufferCopy = hqNxHelper(scale == 4 ? &hq4x_32 : scale == 3 ? &hq3x_32 : &hq2x_32, scale, inputBufferCopy, inWidth, inHeight, outWidth, outHeight);
+		inputBufferAlpha = hqNxHelper(scale == 4 ? &hq4x_32 : scale == 3 ? &hq3x_32 : &hq2x_32, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
 #endif //HAVE_MMX
-
-		// Combine upscaled RGB and alpha
-		for (int i = 0; i < outWidth * outHeight; ++i)
-		{
-			unsigned char a = inputBufferCopy[i * 4 + 3]; // Use upscaled alpha
-			inputBuffer[i * 4 + 3] = a;
-		}
-		break;
 	}
-	return inputBuffer;
+
+	// Combine upscaled RGB and alpha
+	unsigned char* outputBuffer = new unsigned char[outWidth * outHeight * 4];
+	for (int i = 0; i < outWidth * outHeight; ++i)
+	{
+		unsigned char r = inputBufferR[i * 4 + 0]; // Use upscaled R
+		unsigned char g = inputBufferG[i * 4 + 1]; // Use upscaled G
+		unsigned char b = inputBufferB[i * 4 + 2]; // Use upscaled B
+		unsigned char a = inputBufferAlpha[i * 4 + 3]; // Use upscaled alpha
+		outputBuffer[i * 4 + 0] = r;
+		outputBuffer[i * 4 + 1] = g;
+		outputBuffer[i * 4 + 2] = b;
+		outputBuffer[i * 4 + 3] = a;
+	}
+
+	delete[] inputBufferAlpha;
+
+	if (inputBufferR == inputBuffer) {
+		// If we used the same buffer for R, G, B, we can delete it directly
+		delete[] inputBuffer;
+	} else {
+		// Otherwise, delete the separate buffers
+		delete[] inputBufferR;
+		delete[] inputBufferG;
+		delete[] inputBufferB;
+	}
+	return outputBuffer;
 }
 
 static void xbrzOldScale(size_t factor, const uint32_t* src, uint32_t* trg, int srcWidth, int srcHeight, xbrz::ColorFormat colFmt, const xbrz_old::ScalerCfg& cfg, int yFirst, int yLast)
