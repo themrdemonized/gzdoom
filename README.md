@@ -29,6 +29,8 @@
 
 * Size: default
 * I/O Channels: 3(RGB)->3(RGB)
+* Opset: 17
+* Precision: float32
 
 * Dataset: Original Doom Sprites, previous Doom Neural Upscale 2X mod by hidfan (https://www.doomworld.com/forum/topic/99021-doom-neural-upscale-2x-v-10/)
 * Dataset Size: ~800
