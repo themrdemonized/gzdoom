@@ -489,61 +489,74 @@ static void ORT_API_CALL OnnxPrintfLogger(
 	Printf("[ONNX][%s][%s][%s] %s\n", logid, category, code_location, message);
 }
 
-static bool OnnxDebug = false;
+namespace {
+	struct OrtCudaOptionsDeleter {
+		void operator()(OrtCUDAProviderOptionsV2* ptr) const noexcept {
+			if (ptr) {
+				auto& api = Ort::GetApi();
+				api.ReleaseCUDAProviderOptions(ptr);
+			}
+		}
+	};
+}
+
+static const bool OnnxDebug = false;
 static unsigned char* OnnxHelper(int& N,
 	unsigned char* inputBuffer,
 	const int inWidth,
 	const int inHeight,
 	int& outWidth,
 	int& outHeight,
-	const int lump,
 	bool isAlpha)
-
 {
 	static const Ort::Env env(OnnxDebug ? ORT_LOGGING_LEVEL_VERBOSE : ORT_LOGGING_LEVEL_ERROR, "onnx", OnnxPrintfLogger, nullptr);
-	Ort::SessionOptions session_options;
-	auto& api = Ort::GetApi();
-	OrtCUDAProviderOptionsV2* cuda_options = nullptr;
+	// Static session options and CUDA options, initialized once
+	static std::unique_ptr<OrtCUDAProviderOptionsV2, OrtCudaOptionsDeleter> cuda_options;
+	static Ort::SessionOptions session_options;
+	static bool cuda_initialized = false;
 
-	try
-	{
-		auto status = api.CreateCUDAProviderOptions(&cuda_options);
-		if (status != nullptr)
+	if (!cuda_initialized) {
+		try
 		{
-			Printf("ONNX Failed to create CUDA provider options: %s\n", api.GetErrorMessage(status));
-			api.ReleaseStatus(status);
-		} 
-		else
-		{
-			if (OnnxDebug) Printf("ONNX Created CUDA provider options, 4GB VRAM Limit\n");
-			std::vector<const char*> keys{ "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
-			std::vector<const char*> values{ "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
+			auto& api = Ort::GetApi();
+			OrtCUDAProviderOptionsV2* raw_cuda_options = nullptr;
+			auto status = api.CreateCUDAProviderOptions(&raw_cuda_options);
 
-			auto cudaStatus = api.UpdateCUDAProviderOptions(cuda_options, keys.data(), values.data(), keys.size());
-			if (cudaStatus != nullptr)
+			if (status != nullptr)
 			{
-				Printf("ONNX Failed to UpdateCUDAProviderOptions: %s\n", api.GetErrorMessage(cudaStatus));
-				api.ReleaseStatus(cudaStatus);
+				Printf("ONNX Failed to create CUDA provider options: %s\n", api.GetErrorMessage(status));
+				api.ReleaseStatus(status);
 			} 
 			else
 			{
-				if (OnnxDebug) Printf("ONNX Updated CUDA provider options\n");
-				auto providerStatus = api.SessionOptionsAppendExecutionProvider_CUDA_V2(session_options, cuda_options);
-				if (providerStatus != nullptr)
-				{
-					Printf("ONNX Failed to SessionOptionsAppendExecutionProvider_CUDA_V2 %s\n", api.GetErrorMessage(providerStatus));
-					api.ReleaseStatus(providerStatus);
-				} 
-				else
-				{
-					if (OnnxDebug) Printf("ONNX Updated SessionOptionsAppendExecutionProvider_CUDA_V2\n");
+				cuda_options.reset(raw_cuda_options);
+
+				if (OnnxDebug) Printf("ONNX Created CUDA provider options, 4GB VRAM Limit\n");
+				std::vector<const char*> keys{ "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
+				std::vector<const char*> values{ "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
+
+				auto cudaStatus = api.UpdateCUDAProviderOptions(raw_cuda_options, keys.data(), values.data(), keys.size());
+				if (cudaStatus != nullptr) {
+					Printf("ONNX Failed to UpdateCUDAProviderOptions: %s\n", api.GetErrorMessage(cudaStatus));
+					api.ReleaseStatus(cudaStatus);
+				} else {
+					if (OnnxDebug) Printf("ONNX Updated CUDA provider options\n");
+
+					auto providerStatus = api.SessionOptionsAppendExecutionProvider_CUDA_V2(session_options, raw_cuda_options);
+					if (providerStatus != nullptr) {
+						Printf("ONNX Failed to SessionOptionsAppendExecutionProvider_CUDA_V2 %s\n", api.GetErrorMessage(providerStatus));
+						api.ReleaseStatus(providerStatus);
+					} else {
+						if (OnnxDebug) Printf("ONNX Updated SessionOptionsAppendExecutionProvider_CUDA_V2\n");
+					}
 				}
 			}
 		}
-	} 
-	catch (const Ort::Exception& ex)
-	{
-		Printf("ONNX: CUDA provider not available, falling back to CPU: %s\n", ex.what());
+		catch (const Ort::Exception& ex)
+		{
+			Printf("ONNX: CUDA provider not available, falling back to CPU: %s\n", ex.what());
+		}
+		cuda_initialized = true;
 	}
 
 	static bool model_loaded = false;
@@ -573,11 +586,6 @@ static unsigned char* OnnxHelper(int& N,
 	static const auto input_name = session->GetInputNameAllocated(0, allocator);
 	static const auto output_name = session->GetOutputNameAllocated(0, allocator);
 
-	if (OnnxDebug) {
-		Printf("Input name: %s\n", input_name.get());
-		Printf("Output name: %s\n", output_name.get());
-	}
-
 	// 2. Prepare input tensor (convert to float32, 3 channel size)
 	std::vector<int64_t> input_shape = { 3, 3, inHeight, inWidth };
 	size_t input_tensor_size = 3 * 3 * inHeight * inWidth;
@@ -595,7 +603,7 @@ static unsigned char* OnnxHelper(int& N,
 			for (int w = 0; w < inWidth; ++w)
 			{
 				size_t nhwc_index = (h * inWidth + w) * 4;
-				int alpha = inputBuffer[nhwc_index + 3];
+				int alpha = inputBuffer[nhwc_index + rgba_alpha_index];
 				float value = 0.0f;
 
 				if (alpha == 0)
@@ -636,14 +644,14 @@ static unsigned char* OnnxHelper(int& N,
 		}
 	}
 
-	Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+	static const Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 	Ort::Value input_tensor = Ort::Value::CreateTensor(
 		memory_info, float32_buffer.data(), float32_buffer.size() * sizeof(float),
 		input_shape.data(), input_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
 
 	// 3. Run inference
-	std::vector<const char*> input_names = { input_name.get() };
-	std::vector<const char*> output_names = { output_name.get() };
+	static const std::vector<const char*> input_names = { input_name.get() };
+	static const std::vector<const char*> output_names = { output_name.get() };
 	auto output_tensors = session->Run(
 		Ort::RunOptions{ nullptr },
 		input_names.data(), &input_tensor, 1,
@@ -653,8 +661,6 @@ static unsigned char* OnnxHelper(int& N,
 	Ort::Value& output_tensor = output_tensors.front();
 	auto output_type_info = output_tensor.GetTensorTypeAndShapeInfo();
 	std::vector<int64_t> output_shape = output_type_info.GetShape();
-
-	api.ReleaseCUDAProviderOptions(cuda_options);
 
 	// 5. Set outWidth and outHeight from output shape
 	// Expecting output shape: [3, 3, outH, outW]
@@ -723,13 +729,12 @@ static unsigned char* OnnxHelper(int& N,
 	}
 }
 
-static unsigned char* AiScale(const int N,
+static unsigned char* AiScale(int& N,
 	unsigned char* inputBuffer,
 	const int inWidth,
 	const int inHeight,
 	int& outWidth,
-	int& outHeight,
-	const int lump)
+	int& outHeight)
 {
 	int scale = N;
 
@@ -739,7 +744,7 @@ static unsigned char* AiScale(const int N,
 	std::memcpy(inputBufferAlpha, inputBuffer, inputSize);
 
 	// Upscale color buffer
-	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, lump, false);
+	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, false);
 
 	// Upscale the alpha channel separately for better edge quality
 	// From tests, hqNX MMX is better
@@ -758,7 +763,7 @@ static unsigned char* AiScale(const int N,
 			inputBufferAlpha[i * 4 + 2] = a;
 			inputBufferAlpha[i * 4 + 3] = 255;
 		}
-		inputBufferAlpha = OnnxHelper(scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight, lump, true);
+		inputBufferAlpha = OnnxHelper(scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight, true);
 		break;
 	case 2:
 	default:// hqNX
@@ -786,6 +791,7 @@ static unsigned char* AiScale(const int N,
 
 	delete[] inputBufferAlpha;
 	delete[] inputBuffer;
+	N = scale;
 	return outputBuffer;
 }
 
@@ -862,8 +868,7 @@ void FTexture::CreateUpsampledTextureBuffer(FTextureBuffer &texbuffer, bool hasA
 		else if (type == 5)
 			texbuffer.mBuffer = xbrzHelper(xbrzOldScale, mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
 		else if (type == 6) {
-			mult = 2;
-			texbuffer.mBuffer = AiScale(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight, this->GetSourceLump());
+			texbuffer.mBuffer = AiScale(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
 			//texbuffer.mBuffer = normalNx(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
 		}
 		else
