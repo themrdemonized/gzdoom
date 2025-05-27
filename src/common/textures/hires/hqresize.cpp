@@ -507,7 +507,8 @@ static unsigned char* OnnxHelper(int& N,
 	const int inHeight,
 	int& outWidth,
 	int& outHeight,
-	bool isAlpha)
+	bool isAlpha,
+	bool isTiling)
 {
 	static const Ort::Env env(OnnxDebug ? ORT_LOGGING_LEVEL_VERBOSE : ORT_LOGGING_LEVEL_ERROR, "onnx", OnnxPrintfLogger, nullptr);
 	// Static session options and CUDA options, initialized once
@@ -586,9 +587,33 @@ static unsigned char* OnnxHelper(int& N,
 	static const auto input_name = session->GetInputNameAllocated(0, allocator);
 	static const auto output_name = session->GetOutputNameAllocated(0, allocator);
 
-	// 2. Prepare input tensor (convert to float32, 3 channel size)
-	std::vector<int64_t> input_shape = { 3, 3, inHeight, inWidth };
-	size_t input_tensor_size = 3 * 3 * inHeight * inWidth;
+	// --- Tiling logic ---
+	const int pad = 1 ;
+	const int paddedWidth = inWidth + 2 * pad;
+	const int paddedHeight = inHeight + 2 * pad;
+	std::vector<unsigned char> paddedInput(paddedWidth * paddedHeight * 4);
+
+	if (isTiling) {
+		// Fill paddedInput with wrapped pixels
+		for (int y = 0; y < paddedHeight; ++y) {
+			int srcY = (y - pad + inHeight) % inHeight;
+			for (int x = 0; x < paddedWidth; ++x) {
+				int srcX = (x - pad + inWidth) % inWidth;
+				for (int c = 0; c < 4; ++c) {
+					paddedInput[(y * paddedWidth + x) * 4 + c] =
+						inputBuffer[(srcY * inWidth + srcX) * 4 + c];
+				}
+			}
+		}
+	}
+
+	const unsigned char* modelInput = isTiling ? paddedInput.data() : inputBuffer;
+	const int modelInWidth = paddedWidth;
+	const int modelInHeight = paddedHeight;
+
+	// --- Prepare input tensor (3 batches, 3 channels), float32 ---
+	std::vector<int64_t> input_shape = { 3, 3, modelInHeight, modelInWidth };
+	const size_t input_tensor_size = 3 * 3 * modelInHeight * modelInWidth;
 	std::vector<float> float32_buffer(input_tensor_size, 0.0f);
 
 	// Convert RGBA NHWC to RGB NCHW and normalize to [0, 1]
@@ -598,17 +623,17 @@ static unsigned char* OnnxHelper(int& N,
 	for (int d = 0; d < 3; ++d)
 	{
 		int b = rgba_channel_map[d];
-		for (int h = 0; h < inHeight; ++h)
+		for (int h = 0; h < modelInHeight; ++h)
 		{
-			for (int w = 0; w < inWidth; ++w)
+			for (int w = 0; w < modelInWidth; ++w)
 			{
-				size_t nhwc_index = (h * inWidth + w) * 4;
-				int alpha = inputBuffer[nhwc_index + rgba_alpha_index];
+				size_t nhwc_index = (h * modelInWidth + w) * 4;
+				int alpha = modelInput[nhwc_index + rgba_alpha_index];
 				float value = 0.0f;
 
 				if (alpha == 0)
 				{
-					// Try to find a neighbor with alpha > 0
+					// Nearest neighbor search in padded input
 					bool found = false;
 					static const int dx[8] = { 0, 0, -1, 1, -1, 1, -1, 1 };
 					static const int dy[8] = { -1, 1, 0, 0, -1, -1, 1, 1 };
@@ -616,12 +641,12 @@ static unsigned char* OnnxHelper(int& N,
 					{
 						int nx = w + dx[d];
 						int ny = h + dy[d];
-						if (nx >= 0 && nx < inWidth && ny >= 0 && ny < inHeight)
+						if (nx >= 0 && nx < modelInWidth && ny >= 0 && ny < modelInHeight)
 						{
-							size_t nidx = (ny * inWidth + nx) * 4;
-							if (inputBuffer[nidx + 3] > 0)
+							size_t nidx = (ny * modelInWidth + nx) * 4;
+							if (modelInput[nidx + 3] > 0)
 							{
-								value = static_cast<float>(inputBuffer[nidx + b]) / 255.0f;
+								value = static_cast<float>(modelInput[nidx + b]) / 255.0f;
 								found = true;
 							}
 						}
@@ -630,14 +655,15 @@ static unsigned char* OnnxHelper(int& N,
 					{
 						value = 1.0f; // fallback: white
 					}
-				} else
+				}
+				else
 				{
-					value = static_cast<float>(inputBuffer[nhwc_index + b]) / 255.0f;
+					value = static_cast<float>(modelInput[nhwc_index + b]) / 255.0f;
 				}
 
 				for (int c = 0; c < 3; ++c)
 				{
-					size_t idx = b * 3 * inHeight * inWidth + rgba_channel_map[c] * inHeight * inWidth + h * inWidth + w;
+					size_t idx = b * 3 * modelInHeight * modelInWidth + rgba_channel_map[c] * modelInHeight * modelInWidth + h * modelInWidth + w;
 					float32_buffer[idx] = value;
 				}
 			}
@@ -662,43 +688,42 @@ static unsigned char* OnnxHelper(int& N,
 	auto output_type_info = output_tensor.GetTensorTypeAndShapeInfo();
 	std::vector<int64_t> output_shape = output_type_info.GetShape();
 
-	// 5. Set outWidth and outHeight from output shape
+	// 5. Process output
 	// Expecting output shape: [3, 3, outH, outW]
 	if (output_shape.size() == 4 && output_shape[0] == 3 && output_shape[1] == 3)
 	{
 		int outH = static_cast<int>(output_shape[2]);
 		int outW = static_cast<int>(output_shape[3]);
-		int Nw = outW / inWidth;
-		int Nh = outH / inHeight;
+		int Nw = outW / modelInWidth;
+		int Nh = outH / modelInHeight;
 		N = std::max({ Nw, Nh });
-		if (OnnxDebug) Printf("Detected ONNX scaling factor N = %d\n", N);
 
-		outWidth = outW;
-		outHeight = outH;
-		size_t pixel_count = outW * outH;
+		// Calculate crop region
+		int cropX = pad * N;
+		int cropY = pad * N;
+		int cropW = inWidth * N;
+		int cropH = inHeight * N;
+
+		outWidth = cropW;
+		outHeight = cropH;
+		size_t pixel_count = cropW * cropH;
 
 		unsigned char* newBuffer = new unsigned char[pixel_count * 4];
-		if (!newBuffer)
-		{
-			Printf("Failed to allocate memory for ONNX output buffer.\n");
-			outWidth = inWidth;
-			outHeight = inHeight;
-			return inputBuffer;
-		}
-
 		const float* output_data = output_tensor.GetTensorData<float>();
-		for (int h = 0; h < outH; ++h)
+
+		for (int h = 0; h < cropH; ++h)
 		{
-			for (int w = 0; w < outW; ++w)
+			for (int w = 0; w < cropW; ++w)
 			{
-				size_t dst_idx = (h * outW + w) * 4;
+				int oh = h + cropY;
+				int ow = w + cropX;
+				size_t dst_idx = (h * cropW + w) * 4;
 
-				// For each batch, extract the upscaled channel
-				unsigned char r = static_cast<unsigned char>(std::min(std::max(output_data[0 * 3 * outH * outW + 0 * outH * outW + h * outW + w], 0.0f), 1.0f) * 255.0f);
-				unsigned char g = static_cast<unsigned char>(std::min(std::max(output_data[1 * 3 * outH * outW + 1 * outH * outW + h * outW + w], 0.0f), 1.0f) * 255.0f);
-				unsigned char b = static_cast<unsigned char>(std::min(std::max(output_data[2 * 3 * outH * outW + 2 * outH * outW + h * outW + w], 0.0f), 1.0f) * 255.0f);
+				unsigned char r = static_cast<unsigned char>(std::min(std::max(output_data[0 * 3 * outH * outW + 0 * outH * outW + oh * outW + ow], 0.0f), 1.0f) * 255.0f);
+				unsigned char g = static_cast<unsigned char>(std::min(std::max(output_data[1 * 3 * outH * outW + 1 * outH * outW + oh * outW + ow], 0.0f), 1.0f) * 255.0f);
+				unsigned char b = static_cast<unsigned char>(std::min(std::max(output_data[2 * 3 * outH * outW + 2 * outH * outW + oh * outW + ow], 0.0f), 1.0f) * 255.0f);
 
-				// Alpha: nearest neighbor from input
+				// Alpha: nearest neighbor from input (original, not padded)
 				int src_h = h / N;
 				int src_w = w / N;
 				src_h = std::min(std::max(src_h, 0), inHeight - 1);
@@ -716,7 +741,7 @@ static unsigned char* OnnxHelper(int& N,
 
 		delete[] inputBuffer;
 		return newBuffer;
-	} 
+	}
 	else
 	{
 		if (OnnxDebug)
@@ -744,7 +769,7 @@ static unsigned char* AiScale(int& N,
 	std::memcpy(inputBufferAlpha, inputBuffer, inputSize);
 
 	// Upscale color buffer
-	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, false);
+	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, false, true);
 
 	// Upscale the alpha channel separately for better edge quality
 	// From tests, hqNX MMX is better
@@ -763,7 +788,7 @@ static unsigned char* AiScale(int& N,
 			inputBufferAlpha[i * 4 + 2] = a;
 			inputBufferAlpha[i * 4 + 3] = 255;
 		}
-		inputBufferAlpha = OnnxHelper(scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight, true);
+		inputBufferAlpha = OnnxHelper(scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight, true, true);
 		break;
 	case 2:
 	default:// hqNX
