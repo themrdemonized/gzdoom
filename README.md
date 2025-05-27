@@ -34,7 +34,7 @@
 * Dataset Size: ~800
 * OTF (on the fly augmentations):  No
 * Pretrained Model: None
-* Iterations: 300000
+* Iterations: 250000
 * Batch Size: 64
 * LQ Size: 24
 
