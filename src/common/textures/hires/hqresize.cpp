@@ -653,7 +653,7 @@ static unsigned char* OnnxHelper(int& N,
 					}
 					if (!found)
 					{
-						value = 1.0f; // fallback: white
+						value = 0.0f; // fallback: black
 					}
 				}
 				else
@@ -777,7 +777,7 @@ static unsigned char* AiScale(int& N,
 	switch (alphaScaleOption)
 	{
 	case 0: // ScaleNX
-		inputBufferAlpha = scaleNxHelper(scale == 4 ? &scale4x : scale == 3 ? &scale3x : &scale2x, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
+		inputBufferAlpha = scaleNxHelper(scale == 2 ? &scale2x : scale == 3 ? &scale3x : &scale4x, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
 		break;
 	case 1: // ONNX
 		for (int i = 0; i < inWidth * inHeight; ++i)
@@ -794,14 +794,24 @@ static unsigned char* AiScale(int& N,
 	default:// hqNX
 #ifdef HAVE_MMX
 		auto func = &HQnX_asm::hq2x_32;
-		if (scale == 4)
-			func = &HQnX_asm::hq4x_32;
-		else if (scale == 3)
+		switch (scale)
+		{
+		case 2:
+			//func = &HQnX_asm::hq2x_32;
+			break;
+		case 3:
 			func = &HQnX_asm::hq3x_32;
+			break;
+		case 4:
+		default:
+			func = &HQnX_asm::hq4x_32;
+			break;
+		}
 		inputBufferAlpha = hqNxAsmHelper(func, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
 #else
-		inputBufferAlpha = hqNxHelper(scale == 4 ? &hq4x_32 : scale == 3 ? &hq3x_32 : &hq2x_32, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
+		inputBufferAlpha = hqNxHelper(scale == 2 ? &hq2x_32 : scale == 3 ? &hq3x_32 : &hq4x_32, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
 #endif //HAVE_MMX
+		break;
 	}
 
 	// Combine upscaled RGB and alpha
