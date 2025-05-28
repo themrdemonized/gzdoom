@@ -596,9 +596,9 @@ static unsigned char* OnnxHelper(int& N,
 	if (isTiling) {
 		// Fill paddedInput with wrapped pixels
 		for (int y = 0; y < paddedHeight; ++y) {
-			int srcY = (y - pad + inHeight) % inHeight;
+			const int srcY = (y - pad + inHeight) % inHeight;
 			for (int x = 0; x < paddedWidth; ++x) {
-				int srcX = (x - pad + inWidth) % inWidth;
+				const int srcX = (x - pad + inWidth) % inWidth;
 				for (int c = 0; c < 4; ++c) {
 					paddedInput[(y * paddedWidth + x) * 4 + c] =
 						inputBuffer[(srcY * inWidth + srcX) * 4 + c];
@@ -612,7 +612,7 @@ static unsigned char* OnnxHelper(int& N,
 	const int modelInHeight = paddedHeight;
 
 	// --- Prepare input tensor (3 batches, 3 channels), float32 ---
-	std::vector<int64_t> input_shape = { 3, 3, modelInHeight, modelInWidth };
+	const std::vector<int64_t> input_shape = { 3, 3, modelInHeight, modelInWidth };
 	const size_t input_tensor_size = 3 * 3 * modelInHeight * modelInWidth;
 	std::vector<float> float32_buffer(input_tensor_size, 0.0f);
 
@@ -622,13 +622,13 @@ static unsigned char* OnnxHelper(int& N,
 	static const int rgba_alpha_index = 3;
 	for (int d = 0; d < 3; ++d)
 	{
-		int b = rgba_channel_map[d];
+		const int b = rgba_channel_map[d];
 		for (int h = 0; h < modelInHeight; ++h)
 		{
 			for (int w = 0; w < modelInWidth; ++w)
 			{
-				size_t nhwc_index = (h * modelInWidth + w) * 4;
-				int alpha = modelInput[nhwc_index + rgba_alpha_index];
+				const size_t nhwc_index = (h * modelInWidth + w) * 4;
+				const int alpha = modelInput[nhwc_index + rgba_alpha_index];
 				float value = 0.0f;
 
 				if (alpha == 0)
@@ -637,13 +637,13 @@ static unsigned char* OnnxHelper(int& N,
 					bool found = false;
 					static const int dx[8] = { 0, 0, -1, 1, -1, 1, -1, 1 };
 					static const int dy[8] = { -1, 1, 0, 0, -1, -1, 1, 1 };
-					for (int d = 0; d < 8 && !found; ++d)
+					for (int dv = 0; dv < 8 && !found; ++dv)
 					{
-						int nx = w + dx[d];
-						int ny = h + dy[d];
+						const int nx = w + dx[dv];
+						const int ny = h + dy[dv];
 						if (nx >= 0 && nx < modelInWidth && ny >= 0 && ny < modelInHeight)
 						{
-							size_t nidx = (ny * modelInWidth + nx) * 4;
+							const size_t nidx = (ny * modelInWidth + nx) * 4;
 							if (modelInput[nidx + 3] > 0)
 							{
 								value = static_cast<float>(modelInput[nidx + b]) / 255.0f;
@@ -663,7 +663,7 @@ static unsigned char* OnnxHelper(int& N,
 
 				for (int c = 0; c < 3; ++c)
 				{
-					size_t idx = b * 3 * modelInHeight * modelInWidth + rgba_channel_map[c] * modelInHeight * modelInWidth + h * modelInWidth + w;
+					const size_t idx = b * 3 * modelInHeight * modelInWidth + rgba_channel_map[c] * modelInHeight * modelInWidth + h * modelInWidth + w;
 					float32_buffer[idx] = value;
 				}
 			}
@@ -671,42 +671,42 @@ static unsigned char* OnnxHelper(int& N,
 	}
 
 	static const Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-	Ort::Value input_tensor = Ort::Value::CreateTensor(
+	const Ort::Value input_tensor = Ort::Value::CreateTensor(
 		memory_info, float32_buffer.data(), float32_buffer.size() * sizeof(float),
 		input_shape.data(), input_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
 
 	// 3. Run inference
 	static const std::vector<const char*> input_names = { input_name.get() };
 	static const std::vector<const char*> output_names = { output_name.get() };
-	auto output_tensors = session->Run(
+	const auto output_tensors = session->Run(
 		Ort::RunOptions{ nullptr },
 		input_names.data(), &input_tensor, 1,
 		output_names.data(), 1);
 
 	// 4. Get output tensor info
-	Ort::Value& output_tensor = output_tensors.front();
-	auto output_type_info = output_tensor.GetTensorTypeAndShapeInfo();
-	std::vector<int64_t> output_shape = output_type_info.GetShape();
+	const Ort::Value& output_tensor = output_tensors.front();
+	const auto output_type_info = output_tensor.GetTensorTypeAndShapeInfo();
+	const std::vector<int64_t> output_shape = output_type_info.GetShape();
 
 	// 5. Process output
 	// Expecting output shape: [3, 3, outH, outW]
 	if (output_shape.size() == 4 && output_shape[0] == 3 && output_shape[1] == 3)
 	{
-		int outH = static_cast<int>(output_shape[2]);
-		int outW = static_cast<int>(output_shape[3]);
-		int Nw = outW / modelInWidth;
-		int Nh = outH / modelInHeight;
+		const int outH = static_cast<int>(output_shape[2]);
+		const int outW = static_cast<int>(output_shape[3]);
+		const int Nw = outW / modelInWidth;
+		const int Nh = outH / modelInHeight;
 		N = std::max({ Nw, Nh });
 
 		// Calculate crop region
-		int cropX = pad * N;
-		int cropY = pad * N;
-		int cropW = inWidth * N;
-		int cropH = inHeight * N;
+		const int cropX = pad * N;
+		const int cropY = pad * N;
+		const int cropW = inWidth * N;
+		const int cropH = inHeight * N;
 
 		outWidth = cropW;
 		outHeight = cropH;
-		size_t pixel_count = cropW * cropH;
+		const size_t pixel_count = cropW * cropH;
 
 		unsigned char* newBuffer = new unsigned char[pixel_count * 4];
 		const float* output_data = output_tensor.GetTensorData<float>();
@@ -715,22 +715,20 @@ static unsigned char* OnnxHelper(int& N,
 		{
 			for (int w = 0; w < cropW; ++w)
 			{
-				int oh = h + cropY;
-				int ow = w + cropX;
-				size_t dst_idx = (h * cropW + w) * 4;
+				const int oh = h + cropY;
+				const int ow = w + cropX;
+				const size_t dst_idx = (h * cropW + w) * 4;
 
-				unsigned char r = static_cast<unsigned char>(std::min(std::max(output_data[0 * 3 * outH * outW + 0 * outH * outW + oh * outW + ow], 0.0f), 1.0f) * 255.0f);
-				unsigned char g = static_cast<unsigned char>(std::min(std::max(output_data[1 * 3 * outH * outW + 1 * outH * outW + oh * outW + ow], 0.0f), 1.0f) * 255.0f);
-				unsigned char b = static_cast<unsigned char>(std::min(std::max(output_data[2 * 3 * outH * outW + 2 * outH * outW + oh * outW + ow], 0.0f), 1.0f) * 255.0f);
+				const unsigned char r = static_cast<unsigned char>(std::min(std::max(output_data[0 * 3 * outH * outW + 0 * outH * outW + oh * outW + ow], 0.0f), 1.0f) * 255.0f);
+				const unsigned char g = static_cast<unsigned char>(std::min(std::max(output_data[1 * 3 * outH * outW + 1 * outH * outW + oh * outW + ow], 0.0f), 1.0f) * 255.0f);
+				const unsigned char b = static_cast<unsigned char>(std::min(std::max(output_data[2 * 3 * outH * outW + 2 * outH * outW + oh * outW + ow], 0.0f), 1.0f) * 255.0f);
 
 				// Alpha: nearest neighbor from input (original, not padded)
-				int src_h = h / N;
-				int src_w = w / N;
-				src_h = std::min(std::max(src_h, 0), inHeight - 1);
-				src_w = std::min(std::max(src_w, 0), inWidth - 1);
-				size_t src_alpha_idx = (src_h * inWidth + src_w) * 4 + 3;
+				const int src_h = std::min(std::max(h / N, 0), inHeight - 1);
+				const int src_w = std::min(std::max(w / N, 0), inWidth - 1);
+				const size_t src_alpha_idx = (src_h * inWidth + src_w) * 4 + 3;
 
-				unsigned char a = !isAlpha ? inputBuffer[src_alpha_idx] : r;
+				const unsigned char a = !isAlpha ? inputBuffer[src_alpha_idx] : r;
 
 				newBuffer[dst_idx + 0] = r;
 				newBuffer[dst_idx + 1] = g;
@@ -747,7 +745,7 @@ static unsigned char* OnnxHelper(int& N,
 		if (OnnxDebug)
 		{
 			Printf("ONNX output shape is unexpected: ");
-			for (auto v : output_shape) Printf("%lld ", v);
+			for (const auto& v : output_shape) Printf("%lld ", v);
 			Printf("\n");
 		}
 		return inputBuffer;
@@ -782,7 +780,7 @@ static unsigned char* AiScale(int& N,
 	case 1: // ONNX
 		for (int i = 0; i < inWidth * inHeight; ++i)
 		{
-			unsigned char a = inputBufferAlpha[i * 4 + 3];
+			const unsigned char a = inputBufferAlpha[i * 4 + 3];
 			inputBufferAlpha[i * 4 + 0] = a;
 			inputBufferAlpha[i * 4 + 1] = a;
 			inputBufferAlpha[i * 4 + 2] = a;
