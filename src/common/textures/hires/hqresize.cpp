@@ -89,6 +89,12 @@ CUSTOM_CVAR(Int, gl_texture_hqresize_targets, 15, CVAR_ARCHIVE | CVAR_GLOBALCONF
 	UpdateUpscaleMask();
 }
 
+CUSTOM_CVAR(Float, gl_texture_aiscale_sharpen, 0.1f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+{
+	TexMan.FlushAll();
+	UpdateUpscaleMask();
+}
+
 CVAR (Flag, gl_texture_hqresize_textures, gl_texture_hqresize_targets, 1);
 CVAR (Flag, gl_texture_hqresize_sprites, gl_texture_hqresize_targets, 2);
 CVAR (Flag, gl_texture_hqresize_fonts, gl_texture_hqresize_targets, 4);
@@ -754,6 +760,36 @@ static unsigned char* OnnxHelper(int& N,
 	}
 }
 
+static void SharpenBuffer(unsigned char* buffer, int width, int height, float strength)
+{
+	if (strength <= 0.0f) return;
+
+	std::vector<unsigned char> temp(buffer, buffer + width * height * 4);
+
+	// 3x3 sharpening kernel: center = 5, neighbors = -1
+	// out = (5 * center - sum(neighbors)) * strength + center * (1-strength)
+	for (int y = 1; y < height - 1; ++y)
+	{
+		for (int x = 1; x < width - 1; ++x)
+		{
+			for (int c = 0; c < 3; ++c) // Only RGB, not alpha
+			{
+				const int idx = (y * width + x) * 4 + c;
+				int sum = 0;
+				sum += temp[((y - 1) * width + (x)) * 4 + c];
+				sum += temp[((y + 1) * width + (x)) * 4 + c];
+				sum += temp[((y)*width + (x - 1)) * 4 + c];
+				sum += temp[((y)*width + (x + 1)) * 4 + c];
+				const int center = temp[idx];
+				int sharpened = static_cast<int>(
+					(center * 5 - sum) * strength + center * (1.0f - strength) + 0.5f
+					);
+				buffer[idx] = static_cast<unsigned char>(std::clamp(sharpened, 0, 255));
+			}
+		}
+	}
+}
+
 static unsigned char* AiScale(int& N,
 	unsigned char* inputBuffer,
 	const int inWidth,
@@ -770,6 +806,9 @@ static unsigned char* AiScale(int& N,
 
 	// Upscale color buffer
 	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, false, true);
+
+	// Post process color buffer
+	SharpenBuffer(inputBuffer, outWidth, outHeight, gl_texture_aiscale_sharpen);
 
 	// Upscale the alpha channel separately for better edge quality
 	// From tests, hqNX MMX is better
