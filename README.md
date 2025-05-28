@@ -25,7 +25,7 @@
 * Author: demonized
 * License: GPL 3.0
 
-* Date: 23.05.2025
+* Date: 28.05.2025
 
 * Size: default
 * I/O Channels: 3(RGB)->3(RGB)
@@ -33,12 +33,12 @@
 * Precision: float32
 
 * Dataset: Original Doom Sprites, previous Doom Neural Upscale 2X mod by hidfan (https://www.doomworld.com/forum/topic/99021-doom-neural-upscale-2x-v-10/)
-* Dataset Size: ~800
+* Dataset Size: ~2500
 * OTF (on the fly augmentations):  No
 * Pretrained Model: None
-* Iterations: 250000
+* Iterations: 460000
 * Batch Size: 64
-* LQ Size: 24
+* LQ Size: 16
 
 # Welcome to GZDoom!
 
