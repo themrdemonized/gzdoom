@@ -89,7 +89,7 @@ CUSTOM_CVAR(Int, gl_texture_hqresize_targets, 15, CVAR_ARCHIVE | CVAR_GLOBALCONF
 	UpdateUpscaleMask();
 }
 
-CUSTOM_CVAR(Float, gl_texture_aiscale_sharpen, 0.1f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+CUSTOM_CVAR(Float, gl_texture_hqresize_aiscale_sharpen, 0.1f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
 {
 	TexMan.FlushAll();
 	UpdateUpscaleMask();
@@ -808,7 +808,7 @@ static unsigned char* AiScale(int& N,
 	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, false, true);
 
 	// Post process color buffer
-	SharpenBuffer(inputBuffer, outWidth, outHeight, gl_texture_aiscale_sharpen);
+	SharpenBuffer(inputBuffer, outWidth, outHeight, gl_texture_hqresize_aiscale_sharpen);
 
 	// Upscale the alpha channel separately for better edge quality
 	// From tests, hqNX MMX is better
