@@ -530,8 +530,6 @@ static unsigned char* OnnxHelper(int& N,
 			} 
 			else
 			{
-				cuda_options.reset(raw_cuda_options);
-
 				if (OnnxDebug) Printf("ONNX Created CUDA provider options, 4GB VRAM Limit\n");
 				std::vector<const char*> keys{ "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
 				std::vector<const char*> values{ "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
@@ -542,6 +540,8 @@ static unsigned char* OnnxHelper(int& N,
 					api.ReleaseStatus(cudaStatus);
 				} else {
 					if (OnnxDebug) Printf("ONNX Updated CUDA provider options\n");
+
+					cuda_options.reset(raw_cuda_options);
 
 					auto providerStatus = api.SessionOptionsAppendExecutionProvider_CUDA_V2(session_options, raw_cuda_options);
 					if (providerStatus != nullptr) {
@@ -579,8 +579,10 @@ static unsigned char* OnnxHelper(int& N,
 	}
 
 	// If model failed to load, skip further ONNX processing
-	if (!model_loaded)
+	if (!model_loaded) {
+		N = 1;
 		return inputBuffer;
+	}
 
 	// 1. Get input/output names
 	static const Ort::AllocatorWithDefaultOptions allocator;
@@ -588,7 +590,7 @@ static unsigned char* OnnxHelper(int& N,
 	static const auto output_name = session->GetOutputNameAllocated(0, allocator);
 
 	// --- Tiling logic ---
-	const int pad = 1 ;
+	const int pad = 1;
 	const int paddedWidth = inWidth + 2 * pad;
 	const int paddedHeight = inHeight + 2 * pad;
 	std::vector<unsigned char> paddedInput(paddedWidth * paddedHeight * 4);
@@ -708,7 +710,7 @@ static unsigned char* OnnxHelper(int& N,
 		outHeight = cropH;
 		const size_t pixel_count = cropW * cropH;
 
-		unsigned char* newBuffer = new unsigned char[pixel_count * 4];
+		auto newBuffer = new unsigned char[pixel_count * 4];
 		const float* output_data = output_tensor.GetTensorData<float>();
 
 		for (int h = 0; h < cropH; ++h)
