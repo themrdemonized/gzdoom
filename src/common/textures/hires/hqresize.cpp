@@ -89,7 +89,7 @@ CUSTOM_CVAR(Int, gl_texture_hqresize_targets, 15, CVAR_ARCHIVE | CVAR_GLOBALCONF
 	UpdateUpscaleMask();
 }
 
-CUSTOM_CVAR(Float, gl_texture_hqresize_aiscale_sharpen, 0.1f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+CUSTOM_CVAR(Float, gl_texture_hqresize_aiscale_sharpen, 0.06f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
 {
 	TexMan.FlushAll();
 	UpdateUpscaleMask();
