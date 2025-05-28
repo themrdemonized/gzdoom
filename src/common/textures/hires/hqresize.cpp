@@ -941,8 +941,17 @@ void FTexture::CreateUpsampledTextureBuffer(FTextureBuffer &texbuffer, bool hasA
 			texbuffer.mBuffer = xbrzHelper(xbrz::scale, mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
 		else if (type == 5)
 			texbuffer.mBuffer = xbrzHelper(xbrzOldScale, mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
-		else if (type == 6) {
+		else if (type == 6)
+		{
+			const int oldMult = mult;
 			texbuffer.mBuffer = AiScale(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
+			//if (oldMult == 4 && mult == 2) // Upscale twice if model is only 2x, commented out since its lower quality, use proper 4x model
+			//{
+			//	const int inWidth = texbuffer.mWidth;
+			//	const int inHeight = texbuffer.mHeight;
+			//	texbuffer.mBuffer = AiScale(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
+			//}
+				
 			//texbuffer.mBuffer = normalNx(mult, texbuffer.mBuffer, inWidth, inHeight, texbuffer.mWidth, texbuffer.mHeight);
 		}
 		else
