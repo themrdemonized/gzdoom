@@ -47,6 +47,7 @@
 #include "texturemanager.h"
 #include "printf.h"
 
+#include <array>
 #include <vector>
 #include <cstdint>
 #include <cstring>
@@ -541,8 +542,8 @@ static unsigned char* OnnxHelper(int& N,
 					if (status == nullptr)
 					{
 						// Set CUDA options, 4GB VRAM Limit
-						std::vector<const char*> keys{ "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
-						std::vector<const char*> values{ "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
+						std::array keys = { "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
+						std::array values = { "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
 						auto cudaStatus = api.UpdateCUDAProviderOptions(raw_cuda_options, keys.data(), values.data(), keys.size());
 						if (cudaStatus == nullptr)
 						{
@@ -647,7 +648,7 @@ static unsigned char* OnnxHelper(int& N,
 
 	// Convert RGBA NHWC to RGB NCHW and normalize to [0, 1]
 	// Fill each batch with a single channel (R, G, B) and handle alpha==0 with nearest neighbor search
-	static const int rgba_channel_map[3] = { 0, 1, 2 }; // R, G, B offsets in RGBA
+	static const std::array rgba_channel_map = { 0, 1, 2 }; // R, G, B offsets in RGBA
 	static const int rgba_alpha_index = 3;
 	for (int d = 0; d < 3; ++d)
 	{
@@ -664,8 +665,8 @@ static unsigned char* OnnxHelper(int& N,
 				{
 					// Nearest neighbor search in padded input
 					bool found = false;
-					static const int dx[8] = { 0, 0, -1, 1, -1, 1, -1, 1 };
-					static const int dy[8] = { -1, 1, 0, 0, -1, -1, 1, 1 };
+					static const std::array dx = { 0, 0, -1, 1, -1, 1, -1, 1 };
+					static const std::array dy = { -1, 1, 0, 0, -1, -1, 1, 1 };
 					for (int dv = 0; dv < 8 && !found; ++dv)
 					{
 						const int nx = w + dx[dv];
@@ -777,6 +778,7 @@ static unsigned char* OnnxHelper(int& N,
 			for (const auto& v : output_shape) Printf("%lld ", v);
 			Printf("\n");
 		}
+		N = 1;
 		return inputBuffer;
 	}
 }
