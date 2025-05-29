@@ -541,9 +541,8 @@ static unsigned char* OnnxHelper(int& N,
 					if (status == nullptr)
 					{
 						// Set CUDA options, 4GB VRAM Limit
-						const char* VRAMLimit = "4294967296";
 						std::vector<const char*> keys{ "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
-						std::vector<const char*> values{ "0", VRAMLimit, "kSameAsRequested", "DEFAULT", "1", "1", "1" };
+						std::vector<const char*> values{ "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
 						auto cudaStatus = api.UpdateCUDAProviderOptions(raw_cuda_options, keys.data(), values.data(), keys.size());
 						if (cudaStatus == nullptr)
 						{
