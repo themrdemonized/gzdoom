@@ -95,7 +95,13 @@ CUSTOM_CVAR(Float, gl_texture_hqresize_aiscale_sharpen, 0.06f, CVAR_ARCHIVE | CV
 	TexMan.FlushAll();
 	UpdateUpscaleMask();
 }
+CUSTOM_CVAR(Int, gl_texture_hqresize_aiscale_alpha_algorithm, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+{
+	TexMan.FlushAll();
+	UpdateUpscaleMask();
+}
 CVAR(Bool, gl_texture_hqresize_aiscale_use_gpu, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+CVAR(Bool, gl_texture_hqresize_aiscale_debug, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 
 CVAR (Flag, gl_texture_hqresize_textures, gl_texture_hqresize_targets, 1);
 CVAR (Flag, gl_texture_hqresize_sprites, gl_texture_hqresize_targets, 2);
@@ -542,8 +548,8 @@ static unsigned char* OnnxHelper(int& N,
 					if (status == nullptr)
 					{
 						// Set CUDA options, 4GB VRAM Limit
-						std::array keys = { "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
-						std::array values = { "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
+						std::array<const char*, 7> keys = { "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
+						std::array<const char*, 7> values = { "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
 						auto cudaStatus = api.UpdateCUDAProviderOptions(raw_cuda_options, keys.data(), values.data(), keys.size());
 						if (cudaStatus == nullptr)
 						{
@@ -589,9 +595,10 @@ static unsigned char* OnnxHelper(int& N,
 	}
 
 	static bool model_loaded = false;
+	static bool model_initialized = false;
 	static std::unique_ptr<Ort::Session> session;
 
-	if (!model_loaded)
+	if (!model_initialized)
 	{
 		try
 		{
@@ -604,6 +611,7 @@ static unsigned char* OnnxHelper(int& N,
 			Printf("Failed to load ONNX model, no upscaling available: %s\n", ex.what());
 			model_loaded = false;
 		}
+		model_initialized = true;
 	}
 
 	// If model failed to load, skip further ONNX processing
@@ -612,12 +620,12 @@ static unsigned char* OnnxHelper(int& N,
 		return inputBuffer;
 	}
 
-	// 1. Get input/output names
+	// Get input/output names
 	static const Ort::AllocatorWithDefaultOptions allocator;
 	static const auto input_name = session->GetInputNameAllocated(0, allocator);
 	static const auto output_name = session->GetOutputNameAllocated(0, allocator);
 
-	// --- Tiling logic ---
+	// Tiling logic
 	const int pad = 1;
 	const int paddedWidth = inWidth + 2 * pad;
 	const int paddedHeight = inHeight + 2 * pad;
@@ -641,14 +649,14 @@ static unsigned char* OnnxHelper(int& N,
 	const int modelInWidth = paddedWidth;
 	const int modelInHeight = paddedHeight;
 
-	// --- Prepare input tensor (3 batches, 3 channels), float32 ---
+	// Prepare input tensor (3 batches, 3 channels), float32, input shape [3, 3, inW, inH]
 	const std::vector<int64_t> input_shape = { 3, 3, modelInHeight, modelInWidth };
 	const size_t input_tensor_size = 3 * 3 * modelInHeight * modelInWidth;
 	std::vector<float> float32_buffer(input_tensor_size, 0.0f);
 
 	// Convert RGBA NHWC to RGB NCHW and normalize to [0, 1]
 	// Fill each batch with a single channel (R, G, B) and handle alpha==0 with nearest neighbor search
-	static const std::array rgba_channel_map = { 0, 1, 2 }; // R, G, B offsets in RGBA
+	static const std::array<int, 3> rgba_channel_map = { 0, 1, 2 }; // R, G, B offsets in RGBA
 	static const int rgba_alpha_index = 3;
 	for (int d = 0; d < 3; ++d)
 	{
@@ -665,8 +673,8 @@ static unsigned char* OnnxHelper(int& N,
 				{
 					// Nearest neighbor search in padded input
 					bool found = false;
-					static const std::array dx = { 0, 0, -1, 1, -1, 1, -1, 1 };
-					static const std::array dy = { -1, 1, 0, 0, -1, -1, 1, 1 };
+					static const std::array<int, 8> dx = { 0, 0, -1, 1, -1, 1, -1, 1 };
+					static const std::array<int, 8> dy = { -1, 1, 0, 0, -1, -1, 1, 1 };
 					for (int dv = 0; dv < 8 && !found; ++dv)
 					{
 						const int nx = w + dx[dv];
@@ -705,7 +713,7 @@ static unsigned char* OnnxHelper(int& N,
 		memory_info, float32_buffer.data(), float32_buffer.size() * sizeof(float),
 		input_shape.data(), input_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
 
-	// 3. Run inference
+	// Run inference
 	static const std::vector<const char*> input_names = { input_name.get() };
 	static const std::vector<const char*> output_names = { output_name.get() };
 	const auto output_tensors = session->Run(
@@ -713,12 +721,12 @@ static unsigned char* OnnxHelper(int& N,
 		input_names.data(), &input_tensor, 1,
 		output_names.data(), 1);
 
-	// 4. Get output tensor info
+	// Get output tensor info
 	const Ort::Value& output_tensor = output_tensors.front();
 	const auto output_type_info = output_tensor.GetTensorTypeAndShapeInfo();
 	const std::vector<int64_t> output_shape = output_type_info.GetShape();
 
-	// 5. Process output
+	// Process output
 	// Expecting output shape: [3, 3, outH, outW]
 	if (output_shape.size() == 4 && output_shape[0] == 3 && output_shape[1] == 3)
 	{
@@ -772,9 +780,11 @@ static unsigned char* OnnxHelper(int& N,
 	}
 	else
 	{
-		if (OnnxDebug)
+		if (gl_texture_hqresize_aiscale_debug)
 		{
-			Printf("ONNX output shape is unexpected: ");
+			Printf("ONNX output shape is unexpected: in ");
+			for (const auto& v : input_shape) Printf("%lld ", v);
+			Printf(", out ");
 			for (const auto& v : output_shape) Printf("%lld ", v);
 			Printf("\n");
 		}
@@ -826,16 +836,21 @@ static unsigned char* AiScale(int& N,
 	const size_t inputSize = inWidth * inHeight * 4;
 	auto inputBufferAlpha = new unsigned char[inputSize];
 	std::memcpy(inputBufferAlpha, inputBuffer, inputSize);
+	const int inAlphaWidth = inWidth;
+	const int inAlphaHeight = inHeight;
+	int outAlphaWidth = outWidth;
+	int outAlphaHeight = outHeight;
 
 	// Upscale color buffer
+	const auto inputBufferPtr = inputBuffer;
 	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, false, true);
 
-	// If scaling failed (scale == 1) - return copied buffer
-	if (scale == 1)
+	// If scaling failed (same pointer on return) - return input buffer
+	if (inputBuffer == inputBufferPtr)
 	{
-		delete[] inputBuffer;
-		N = scale;
-		return inputBufferAlpha;
+		delete[] inputBufferAlpha;
+		N = 1;
+		return inputBuffer;
 	}
 
 	// Post process color buffer
@@ -843,47 +858,50 @@ static unsigned char* AiScale(int& N,
 
 	// Upscale the alpha channel separately for better edge quality
 	// From tests, hqNX MMX is better
-	const int alphaScaleOption = 2;
-	switch (alphaScaleOption)
+	if (scale > 1)
 	{
-	case 0: // ScaleNX
-		inputBufferAlpha = scaleNxHelper(scale == 2 ? &scale2x : scale == 3 ? &scale3x : &scale4x, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
-		break;
-	case 1: // ONNX
-		for (int i = 0; i < inWidth * inHeight; ++i)
+		const int alphaScaleOption = gl_texture_hqresize_aiscale_alpha_algorithm;
+		switch (alphaScaleOption)
 		{
-			const unsigned char a = inputBufferAlpha[i * 4 + 3];
-			inputBufferAlpha[i * 4 + 0] = a;
-			inputBufferAlpha[i * 4 + 1] = a;
-			inputBufferAlpha[i * 4 + 2] = a;
-			inputBufferAlpha[i * 4 + 3] = 255;
-		}
-		inputBufferAlpha = OnnxHelper(scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight, true, true);
-		break;
-	case 2:
-	default:// hqNX
-#ifdef HAVE_MMX
-		auto func = &HQnX_asm::hq2x_32;
-		switch (scale)
-		{
+		case 0: // ONNX
+			for (int i = 0; i < inWidth * inHeight; ++i)
+			{
+				const unsigned char a = inputBufferAlpha[i * 4 + 3];
+				inputBufferAlpha[i * 4 + 0] = a;
+				inputBufferAlpha[i * 4 + 1] = a;
+				inputBufferAlpha[i * 4 + 2] = a;
+				inputBufferAlpha[i * 4 + 3] = 255;
+			}
+			inputBufferAlpha = OnnxHelper(scale, inputBufferAlpha, inAlphaWidth, inAlphaHeight, outAlphaWidth, outAlphaHeight, true, true);
+			break;
+		case 1: // ScaleNX
+			inputBufferAlpha = scaleNxHelper(scale == 2 ? &scale2x : scale == 3 ? &scale3x : &scale4x, scale, inputBufferAlpha, inAlphaWidth, inAlphaHeight, outAlphaWidth, outAlphaHeight);
+			break;
 		case 2:
-			//func = &HQnX_asm::hq2x_32;
-			break;
-		case 3:
-			func = &HQnX_asm::hq3x_32;
-			break;
-		case 4:
-		default:
-			func = &HQnX_asm::hq4x_32;
+		default:// hqNX
+#ifdef HAVE_MMX
+			auto func = &HQnX_asm::hq2x_32;
+			switch (scale)
+			{
+			case 2:
+				//func = &HQnX_asm::hq2x_32;
+				break;
+			case 3:
+				func = &HQnX_asm::hq3x_32;
+				break;
+			case 4:
+			default:
+				func = &HQnX_asm::hq4x_32;
+				break;
+			}
+			inputBufferAlpha = hqNxAsmHelper(func, scale, inputBufferAlpha, inAlphaWidth, inAlphaHeight, outAlphaWidth, outAlphaHeight);
+#else
+			inputBufferAlpha = hqNxHelper(scale == 2 ? &hq2x_32 : scale == 3 ? &hq3x_32 : &hq4x_32, scale, inputBufferAlpha, inAlphaWidth, inAlphaHeight, outAlphaWidth, outAlphaHeight);
+#endif //HAVE_MMX
 			break;
 		}
-		inputBufferAlpha = hqNxAsmHelper(func, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
-#else
-		inputBufferAlpha = hqNxHelper(scale == 2 ? &hq2x_32 : scale == 3 ? &hq3x_32 : &hq4x_32, scale, inputBufferAlpha, inWidth, inHeight, outWidth, outHeight);
-#endif //HAVE_MMX
-		break;
 	}
-
+	
 	// Combine upscaled RGB and alpha
 	auto outputBuffer = new unsigned char[outWidth * outHeight * 4];
 	for (int i = 0; i < outWidth * outHeight; ++i)
