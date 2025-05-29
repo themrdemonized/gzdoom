@@ -102,6 +102,7 @@ CUSTOM_CVAR(Int, gl_texture_hqresize_aiscale_alpha_algorithm, 2, CVAR_ARCHIVE | 
 }
 CVAR(Bool, gl_texture_hqresize_aiscale_use_gpu, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 CVAR(Bool, gl_texture_hqresize_aiscale_debug, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+CVAR(Float, gl_texture_hqresize_aiscale_vram_limit_gb, 3.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 
 CVAR (Flag, gl_texture_hqresize_textures, gl_texture_hqresize_targets, 1);
 CVAR (Flag, gl_texture_hqresize_sprites, gl_texture_hqresize_targets, 2);
@@ -547,9 +548,10 @@ static unsigned char* OnnxHelper(int& N,
 					auto status = api.CreateCUDAProviderOptions(&raw_cuda_options);
 					if (status == nullptr)
 					{
-						// Set CUDA options, 4GB VRAM Limit
+						// Set CUDA options
+						std::string vram_limit_str = std::to_string(static_cast<long long>(static_cast<float>(gl_texture_hqresize_aiscale_vram_limit_gb) * 1024 * 1024 * 1024));
 						std::array<const char*, 7> keys = { "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
-						std::array<const char*, 7> values = { "0", "4294967296", "kSameAsRequested", "DEFAULT", "1", "1", "1" };
+						std::array<const char*, 7> values = { "0", vram_limit_str.c_str(), "kSameAsRequested", "DEFAULT", "1", "1", "1"};
 						auto cudaStatus = api.UpdateCUDAProviderOptions(raw_cuda_options, keys.data(), values.data(), keys.size());
 						if (cudaStatus == nullptr)
 						{
@@ -557,7 +559,7 @@ static unsigned char* OnnxHelper(int& N,
 							auto providerStatus = api.SessionOptionsAppendExecutionProvider_CUDA_V2(session_options, raw_cuda_options);
 							if (providerStatus == nullptr)
 							{
-								Printf("ONNX: Using CUDA provider, 4GB VRAM limit\n");
+								Printf("ONNX: Using CUDA provider, %.1fGB VRAM limit\n", static_cast<float>(gl_texture_hqresize_aiscale_vram_limit_gb));
 								provider_selected = true;
 							}
 							else
