@@ -600,7 +600,7 @@ static unsigned char* OnnxHelper(int& N,
 		} 
 		catch (const Ort::Exception& ex)
 		{
-			Printf("Failed to load ONNX model: %s\n", ex.what());
+			Printf("Failed to load ONNX model, no upscaling available: %s\n", ex.what());
 			model_loaded = false;
 		}
 	}
@@ -820,13 +820,21 @@ static unsigned char* AiScale(int& N,
 {
 	int scale = N;
 
-	// Copy inputBuffer to alpha buffer
+	// Copy inputBuffer for alpha processing
 	const size_t inputSize = inWidth * inHeight * 4;
 	auto inputBufferAlpha = new unsigned char[inputSize];
 	std::memcpy(inputBufferAlpha, inputBuffer, inputSize);
 
 	// Upscale color buffer
 	inputBuffer = OnnxHelper(scale, inputBuffer, inWidth, inHeight, outWidth, outHeight, false, true);
+
+	// If scaling failed (scale == 1) - return copied buffer
+	if (scale == 1)
+	{
+		delete[] inputBuffer;
+		N = scale;
+		return inputBufferAlpha;
+	}
 
 	// Post process color buffer
 	SharpenBuffer(inputBuffer, outWidth, outHeight, gl_texture_hqresize_aiscale_sharpen);
