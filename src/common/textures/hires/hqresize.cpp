@@ -55,6 +55,9 @@
 #include <onnxruntime_cxx_api.h>
 #include <onnxruntime_c_api.h>
 
+#define NOMINMAX
+#include <dml_provider_factory.h>
+
 int upscalemask;
 
 EXTERN_CVAR(Int, gl_texture_hqresizemult)
@@ -530,7 +533,6 @@ static unsigned char* OnnxHelper(int& N,
 	static std::unique_ptr<OrtCUDAProviderOptionsV2, OrtCudaOptionsDeleter> cuda_options;
 	static Ort::SessionOptions session_options;
 
-	static bool cuda_initialized = false;
 	static bool provider_selected = false;
 
 	if (!provider_selected)
@@ -539,61 +541,82 @@ static unsigned char* OnnxHelper(int& N,
 		// Try GPU first
 		if (gl_texture_hqresize_aiscale_use_gpu)
 		{
-			// Try CUDA first
+			// Try CUDA
 			try
 			{
-				if (!cuda_initialized)
+				OrtCUDAProviderOptionsV2* raw_cuda_options = nullptr;
+				auto status = api.CreateCUDAProviderOptions(&raw_cuda_options);
+				if (status == nullptr)
 				{
-					OrtCUDAProviderOptionsV2* raw_cuda_options = nullptr;
-					auto status = api.CreateCUDAProviderOptions(&raw_cuda_options);
-					if (status == nullptr)
+					// Set CUDA options
+					std::string vram_limit_str = std::to_string(static_cast<long long>(static_cast<float>(gl_texture_hqresize_aiscale_vram_limit_gb) * 1024 * 1024 * 1024));
+					std::array<const char*, 7> keys = { "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
+					std::array<const char*, 7> values = { "0", vram_limit_str.c_str(), "kSameAsRequested", "DEFAULT", "1", "1", "1"};
+					auto cudaStatus = api.UpdateCUDAProviderOptions(raw_cuda_options, keys.data(), values.data(), keys.size());
+					if (cudaStatus == nullptr)
 					{
-						// Set CUDA options
-						std::string vram_limit_str = std::to_string(static_cast<long long>(static_cast<float>(gl_texture_hqresize_aiscale_vram_limit_gb) * 1024 * 1024 * 1024));
-						std::array<const char*, 7> keys = { "device_id", "gpu_mem_limit", "arena_extend_strategy", "cudnn_conv_algo_search", "do_copy_in_default_stream", "cudnn_conv_use_max_workspace", "cudnn_conv1d_pad_to_nc1d" };
-						std::array<const char*, 7> values = { "0", vram_limit_str.c_str(), "kSameAsRequested", "DEFAULT", "1", "1", "1"};
-						auto cudaStatus = api.UpdateCUDAProviderOptions(raw_cuda_options, keys.data(), values.data(), keys.size());
-						if (cudaStatus == nullptr)
+						cuda_options.reset(raw_cuda_options);
+						auto providerStatus = api.SessionOptionsAppendExecutionProvider_CUDA_V2(session_options, raw_cuda_options);
+						if (providerStatus == nullptr)
 						{
-							cuda_options.reset(raw_cuda_options);
-							auto providerStatus = api.SessionOptionsAppendExecutionProvider_CUDA_V2(session_options, raw_cuda_options);
-							if (providerStatus == nullptr)
-							{
-								Printf("ONNX: Using CUDA provider, %.1fGB VRAM limit\n", static_cast<float>(gl_texture_hqresize_aiscale_vram_limit_gb));
-								provider_selected = true;
-							}
-							else
-							{
-								Printf("ONNX: CUDA is unavailable, failed to set session options\n");
-								api.ReleaseStatus(providerStatus);
-							}
-						} 
+							Printf("ONNX: Using CUDA provider, %.1fGB VRAM limit\n", static_cast<float>(gl_texture_hqresize_aiscale_vram_limit_gb));
+							provider_selected = true;
+						}
 						else
 						{
-							Printf("ONNX: CUDA is unavailable, failed to update CUDA provider options\n");
-							api.ReleaseStatus(cudaStatus);
+							Printf("ONNX: CUDA is unavailable, failed to set session options\n");
+							api.ReleaseStatus(providerStatus);
 						}
 					} 
 					else
 					{
-						Printf("ONNX: CUDA is unavailable, failed to create CUDA provider options\n");
-						api.ReleaseStatus(status);
+						Printf("ONNX: CUDA is unavailable, failed to update CUDA provider options\n");
+						api.ReleaseStatus(cudaStatus);
 					}
+				} 
+				else
+				{
+					Printf("ONNX: CUDA is unavailable, failed to create CUDA provider options\n");
+					api.ReleaseStatus(status);
 				}
-				cuda_initialized = true;
 			}
 			catch (const Ort::Exception& ex) {
 				Printf("ONNX: CUDA provider not available: %s\n", ex.what());
-				cuda_initialized = true;
+			}
+
+			// Try DirectML, untested yet
+			if (!provider_selected)
+			{
+				try
+				{
+					auto dmlStatus = OrtSessionOptionsAppendExecutionProvider_DML(session_options, 0);
+					if (dmlStatus == nullptr)
+					{
+						Printf("ONNX: Using DirectML provider");
+						session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+						session_options.DisableMemPattern();
+						provider_selected = true;
+					}
+					else
+					{
+						Printf("ONNX: DirectML is unavailable, failed to append execution provider\n");
+						api.ReleaseStatus(dmlStatus);
+					}
+				} 
+				catch (const Ort::Exception& ex) {
+					Printf("ONNX: DirectML provider not available: %s\n", ex.what());
+				}
 			}
 		}
 		
-		// If CUDA is unavailable, CPU will be used by default (no need to add explicitly)
+		// If nothing is available, CPU will be used by default (no need to add explicitly)
 		if (!provider_selected)
 		{
 			Printf("ONNX: Using default CPU provider\n");
 			provider_selected = true;
 		}
+
+		session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 	}
 
 	static bool model_loaded = false;
