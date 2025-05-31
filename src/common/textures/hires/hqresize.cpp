@@ -105,6 +105,7 @@ CUSTOM_CVAR(Int, gl_texture_hqresize_aiscale_alpha_algorithm, 2, CVAR_ARCHIVE | 
 }
 CVAR(Bool, gl_texture_hqresize_aiscale_use_gpu, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 CVAR(Bool, gl_texture_hqresize_aiscale_debug, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+CVAR(Bool, gl_texture_hqresize_aiscale_use_tiny_model, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 CVAR(Float, gl_texture_hqresize_aiscale_vram_limit_gb, 3.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 
 CVAR (Flag, gl_texture_hqresize_textures, gl_texture_hqresize_targets, 1);
@@ -625,16 +626,33 @@ static unsigned char* OnnxHelper(int& N,
 
 	if (!model_initialized)
 	{
-		try
+		if (gl_texture_hqresize_aiscale_use_tiny_model)
 		{
-			session = std::make_unique<Ort::Session>(env, L"model.onnx", session_options);
-			Printf("ONNX model loaded successfully.\n");
-			model_loaded = true;
-		} 
-		catch (const Ort::Exception& ex)
+			try
+			{
+				session = std::make_unique<Ort::Session>(env, L"model_tiny.onnx", session_options);
+				Printf("ONNX tiny model loaded successfully.\n");
+				model_loaded = true;
+			}
+			catch (const Ort::Exception& ex)
+			{
+				Printf("Failed to load tiny ONNX model, trying default model (need model_tiny.onnx in GZDoom folder): %s\n", ex.what());
+				model_loaded = false;
+			}
+		}
+		if (!model_loaded)
 		{
-			Printf("Failed to load ONNX model, no upscaling available: %s\n", ex.what());
-			model_loaded = false;
+			try
+			{
+				session = std::make_unique<Ort::Session>(env, L"model.onnx", session_options);
+				Printf("ONNX model loaded successfully.\n");
+				model_loaded = true;
+			} 
+			catch (const Ort::Exception& ex)
+			{
+				Printf("Failed to load ONNX model, no upscaling available (need model.onnx in GZDoom folder): %s\n", ex.what());
+				model_loaded = false;
+			}
 		}
 		model_initialized = true;
 	}
