@@ -95,6 +95,11 @@ CUSTOM_CVAR(Float, gl_texture_hqresize_aiscale_sharpen, 0.06f, CVAR_ARCHIVE | CV
 	TexMan.FlushAll();
 	UpdateUpscaleMask();
 }
+CUSTOM_CVAR(Bool, gl_texture_hqresize_aiscale_post_scale, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+{
+	TexMan.FlushAll();
+	UpdateUpscaleMask();
+}
 CUSTOM_CVAR(Int, gl_texture_hqresize_aiscale_alpha_algorithm, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
 {
 	TexMan.FlushAll();
@@ -102,6 +107,7 @@ CUSTOM_CVAR(Int, gl_texture_hqresize_aiscale_alpha_algorithm, 2, CVAR_ARCHIVE | 
 }
 CVAR(Bool, gl_texture_hqresize_aiscale_use_gpu, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 CVAR(Bool, gl_texture_hqresize_aiscale_debug, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+CVAR(Bool, gl_texture_hqresize_aiscale_use_tiny_model, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 CVAR(Float, gl_texture_hqresize_aiscale_vram_limit_gb, 3.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 
 CVAR (Flag, gl_texture_hqresize_textures, gl_texture_hqresize_targets, 1);
@@ -594,6 +600,8 @@ static unsigned char* OnnxHelper(int& N,
 			Printf("ONNX: Using default CPU provider\n");
 			provider_selected = true;
 		}
+
+		session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 	}
 
 	static bool model_loaded = false;
@@ -602,16 +610,33 @@ static unsigned char* OnnxHelper(int& N,
 
 	if (!model_initialized)
 	{
-		try
+		if (gl_texture_hqresize_aiscale_use_tiny_model)
 		{
-			session = std::make_unique<Ort::Session>(env, L"model.onnx", session_options);
-			Printf("ONNX model loaded successfully.\n");
-			model_loaded = true;
-		} 
-		catch (const Ort::Exception& ex)
+			try
+			{
+				session = std::make_unique<Ort::Session>(env, L"model_tiny.onnx", session_options);
+				Printf("ONNX tiny model loaded successfully.\n");
+				model_loaded = true;
+			}
+			catch (const Ort::Exception& ex)
+			{
+				Printf("Failed to load tiny ONNX model, trying default model (need model_tiny.onnx in GZDoom folder): %s\n", ex.what());
+				model_loaded = false;
+			}
+		}
+		if (!model_loaded)
 		{
-			Printf("Failed to load ONNX model, no upscaling available: %s\n", ex.what());
-			model_loaded = false;
+			try
+			{
+				session = std::make_unique<Ort::Session>(env, L"model.onnx", session_options);
+				Printf("ONNX model loaded successfully.\n");
+				model_loaded = true;
+			} 
+			catch (const Ort::Exception& ex)
+			{
+				Printf("Failed to load ONNX model, no upscaling available (need model.onnx in GZDoom folder): %s\n", ex.what());
+				model_loaded = false;
+			}
 		}
 		model_initialized = true;
 	}
@@ -853,6 +878,18 @@ static unsigned char* AiScale(int& N,
 		delete[] inputBufferAlpha;
 		N = 1;
 		return inputBuffer;
+	}
+
+	// If scaling setting is more than model supports and cvar is set, upscale to requested setting with scaleNx
+	if (gl_texture_hqresize_aiscale_post_scale && scale < N)
+	{
+		const int post_scale_factor = N / scale;
+		if (post_scale_factor > 1)
+		{
+			auto func = post_scale_factor == 2 ? &scale2x : post_scale_factor == 3 ? &scale3x : &scale4x;
+			inputBuffer = scaleNxHelper(func, post_scale_factor, inputBuffer, outWidth, outHeight, outWidth, outHeight);
+			scale *= post_scale_factor;
+		}
 	}
 
 	// Post process color buffer
