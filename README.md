@@ -19,13 +19,13 @@
 	* "cudnn_cnn64_9.dll"
 	* "cudnn_engines_precompiled64_9.dll", you need to install Nvidia CuDNN Library here (https://developer.nvidia.com/cudnn), and then copy files from `C:\Program Files\NVIDIA\CUDNN\<version>\bin\<version>` folder
 
-#### ONNX Model Specifications
+#### ONNX Model Specifications (tiny model)
 * Scale: 2
-* Architecture: UltraCompact
+* Architecture: UltraCompact (SuperUltraCompact)
 * Author: demonized
 * License: GPL 3.0
 
-* Date: 28.05.2025
+* Date: 28.05.2025 (01.06.2025)
 
 * Size: default
 * I/O Channels: 3(RGB)->3(RGB)
@@ -36,7 +36,7 @@
 * Dataset Size: ~2500
 * OTF (on the fly augmentations):  No
 * Pretrained Model: None
-* Iterations: 460000
+* Iterations: 460000 (454000)
 * Batch Size: 64
 * LQ Size: 16
 
