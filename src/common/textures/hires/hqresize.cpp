@@ -600,6 +600,8 @@ static unsigned char* OnnxHelper(int& N,
 			Printf("ONNX: Using default CPU provider\n");
 			provider_selected = true;
 		}
+
+		session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 	}
 
 	static bool model_loaded = false;
