@@ -785,7 +785,7 @@ These options will require a restart to take effect.,VK_RESTART,,,,Tato nastaven
 Select Vulkan Device,VKMNU_DEVICESELECT,This is not yet implemented - but it is planned,,,Vybrat zařízení Vulkanu,Vælg Vulkan-enhed,Vulkan Gerät auswählen,Επιλογή Vulkan Συσκευής,Elekti Vulkan-aparaton,Seleccionar dispositivo Vulkan,,Valitse Vulkan-laite,Sélectionner périphérique Vulkan,Vulkan eszköz kiválasztása,Seleziona il Dispositivo Vulkan,Vulkanデバイスの選択,벌칸 장치를 고르시오,Selecteer Vulkan Apparaat,Velg Vulkan-enhet,Wybierz Urządzenie Vulkan,Selecione o dispositivo Vulkan,,Selectare Dispozitiv Vulkan,Выбрать устройство Vulkan,Изаберите Vulkan уређај,Välj Vulkan-enhet,Vulkan Aygıtını Seçin,Виберіть пристрій Vulkan,
 ,,Texture scaling,,,,,,,,,,,,,,,,,,,,,,,,,,,
 ScaleNx,OPTVAL_SCALENX,,,,,,,,,,,,,,,,,,,,,,,,,,,,
-NormalNx,OPTVAL_NORMALNX,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+AI (ONNX),OPTVAL_NORMALNX,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 hqNx,OPTVAL_HQNX,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 hqNx MMX,OPTVAL_HQNXMMX,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 xBRZ,OPTVAL_NXBRZ,,,,,,,,,,,,,,,,,,,,,,,,,,,,
